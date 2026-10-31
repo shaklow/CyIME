@@ -36,6 +36,11 @@ data class CandidateState(
     val candidateFocus: CandidateFocus? = null,
 )
 
+/** 清空/撤回只受未完成输入阻挡；上屏后的联想和剪贴板候选不算组词。 */
+internal fun CandidateState.hasUncommittedInputForClear(hasPartialSegments: Boolean): Boolean =
+    isComposing || inputText.isNotEmpty() || preeditText.isNotEmpty() ||
+        pendingEnglishText.isNotEmpty() || hasPartialSegments
+
 /** Appending expanded pages or updating suggestions does not change existing candidate identities. */
 internal fun CandidateState.hasSameSelectionSource(current: CandidateState): Boolean =
     engineRevision == current.engineRevision && inputText == current.inputText &&

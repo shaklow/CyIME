@@ -833,23 +833,8 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                         // 直接上屏的英文已经在输入框里，跟着下面整框一起删、一起撤回，这里不单独回删。
                         // 输入框本来是空的（只有拼音）时，撤回照原来一样放回拼音。
                         val composedText = if (scope.composition && candState.pendingEnglishText.isEmpty()) candState.inputText else ""
-                        if (scope.composition) clearInputStateForKeys()
                         // 空闲态：清空整个输入框（光标前、选区、光标后），记下来供下滑撤回原位恢复。
-                        service.calculatorEngine.clear()
-                        updateCalculatorCandidates()
-                        // 清空 partial 累积，避免残留词被 buildT9DisplayState 拼进下一轮 preedit。
-                        service.t9PartialSegments.clear()
-                        endQueuedComposition()
-                        service.candidateState.value = service.candidateState.value.copy(
-                            candidates = emptyList(),
-                            candidateComments = emptyList(),
-                            associationCandidates = emptyList(),
-                            pendingEnglishText = "",
-                            inputText = "",
-                            isComposing = false,
-                            isShowingRecentClipboard = false,
-                            candidateActions = emptyList()
-                        )
+                        clearInputStateForKeys()
                         var rejected: String? = null
                         withEditor {
                             service.lastClearedText = ""
@@ -2081,17 +2066,12 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
      *（pendingEnglishText 非空——英文按键不经 RIME，故 inputText/preeditText/isComposing 恒空，
      * 漏判会让 clear_all 把 composing 区文本与 pendingEnglishText 重复拼接）
      * 或 T9 partial 累积。
+     * 上屏后的联想、在途预测和剪贴板候选不是未上屏内容，不能阻止一次清空正文或撤回。
      * 不能用 RIME getInput()——tryLocked 锁竞争时静默返回空，会误判空闲态。
      */
     private fun hasInputState(candState: CandidateState): Boolean =
-        candState.isComposing ||
-            candState.inputText.isNotEmpty() ||
-            candState.preeditText.isNotEmpty() ||
-            candState.pendingEnglishText.isNotEmpty() ||
-            service.t9PartialSegments.isNotEmpty() ||
-            service.rimeEngine.compositionActiveForDeletion() != false ||
-            candState.associationCandidates.isNotEmpty() || candState.isShowingRecentClipboard ||
-            service.predictionManager.hasPendingPrediction
+        candState.hasUncommittedInputForClear(service.t9PartialSegments.isNotEmpty()) ||
+            service.rimeEngine.compositionActiveForDeletion() != false
 
     /** Ends the composition in the input FIFO, T9's own digit state included (see [com.kingzcheung.xime.rime.RimeEngine.endQueuedComposition]). */
     internal fun endQueuedComposition() =
@@ -2099,7 +2079,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
 
     /**
      * 清空输入态（预编辑/候选/联想/partial 累积/计算器），不动已上屏文本。
-     * 供 clear_composition 与 clear_all 输入态分支共用。
+     * 供 clear_composition 与 clear_all 共用。
      *
      * 显式清 preeditText（与提交路径"残留根治"一致），不依赖 updateUI 自愈；
      * 输入框模式清 composing 区；T9 方案重置左侧候选区（其他键盘无左栏，跳过）。
