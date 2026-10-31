@@ -349,7 +349,7 @@ class VoiceRecognitionHandler(
             return
         }
 
-        val cleanText = (normalizationLanguage ?: getState().inputProfile.language).let { normalizeVoiceText(text, it, keepVoiceMarks(inputLanguage ?: it)) }
+        val cleanText = (normalizationLanguage ?: getState().inputProfile.language).let { normalizeVoiceText(text, it, keepVoiceMarks(inputLanguage ?: it), voiceMarks()) }
         if (toolbarSession) {
             // 部分引擎 stop 时重发上一句 final；没有新 partial 时只保留一次。
             if (cleanText.isNotEmpty() && !text.trimStart().startsWith("错误:") && !text.trimStart().startsWith("错误：") &&
@@ -376,7 +376,8 @@ class VoiceRecognitionHandler(
             ic.setComposingText("", 1); ic.finishComposingText()
         }
         if (ic != null && cleanText.isNotEmpty() && !text.trimStart().startsWith("错误:") && !text.trimStart().startsWith("错误：")) {
-            commitFinal(ic, cleanText, lastPartialText)
+            // 终端里临时结果没写进去（见 handlePartialResult），整句按新文字上屏。
+            commitFinal(ic, cleanText, if (TerminalEditor.active) "" else lastPartialText)
         }
         lastPartialText = ""
 
@@ -420,15 +421,19 @@ class VoiceRecognitionHandler(
         toolbarText.update(ic, toolbarSentencePrefix.orEmpty() + text)
     }
 
-    /** 整句定稿 (Chinese recognition only) keeps the local model's punctuation; online engines, other recognizers
-     *  (including the English side of a Chinese pair) and the 6 s mode keep the old spacing. */
+    /** 整句定稿 (Chinese recognition only) keeps the local model's punctuation only when 自动加标点 is on (default off);
+     *  online engines, other recognizers (including the English side of a Chinese pair) and the 6 s mode keep the old spacing. */
     private fun keepVoiceMarks(recognition: InputLanguage) = recognition == InputLanguage.CHINESE &&
-        SettingsPreferences.isSttUseLocal(context) && SettingsPreferences.isSttWholeSentence(context)
+        SettingsPreferences.isSttUseLocal(context) && SettingsPreferences.isSttWholeSentence(context) &&
+        SettingsPreferences.isSttAutoPunctuation(context)
+
+    private fun voiceMarks() = VoiceMarks(comma = SettingsPreferences.isSttPunctuationComma(context),
+        period = SettingsPreferences.isSttPunctuationPeriod(context), question = SettingsPreferences.isSttPunctuationQuestion(context))
 
     private fun handlePartialResult(text: String) {
         if (!acceptsInputSession()) return
         if (sessionAbandoned || suppressDuplicateFinal) return
-        val cleanText = (normalizationLanguage ?: getState().inputProfile.language).let { normalizeVoiceText(text, it, keepVoiceMarks(inputLanguage ?: it)) }
+        val cleanText = (normalizationLanguage ?: getState().inputProfile.language).let { normalizeVoiceText(text, it, keepVoiceMarks(inputLanguage ?: it), voiceMarks()) }
         if (cleanText == lastPartialText) return
         lastPartialText = cleanText
         Log.d(TAG, "Speech result (partial): $cleanText")
@@ -437,7 +442,8 @@ class VoiceRecognitionHandler(
         if (ic != null) {
             if (toolbarSession) {
                 updateToolbarText(ic, cleanText)
-            } else {
+            } else if (!TerminalEditor.active) {
+                // 终端收到组合区文字就直接发出去，之后每次改写都会再发一遍：临时结果只显示在键盘上。
                 onComposingWritten()
                 ic.setComposingText(cleanText, 1)
             }

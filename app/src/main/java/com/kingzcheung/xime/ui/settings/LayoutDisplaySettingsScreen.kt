@@ -20,8 +20,10 @@ import androidx.compose.material.icons.twotone.DashboardCustomize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.twotone.Straighten
+import androidx.compose.material.icons.twotone.ViewWeek
 import androidx.compose.material.icons.twotone.Padding
 import androidx.compose.material.icons.twotone.Keyboard
+import androidx.compose.material.icons.twotone.Lightbulb
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -131,7 +133,7 @@ private fun LayoutDisplayPage(
                         onClick = { context.startActivity(android.content.Intent(context, com.kingzcheung.xime.CustomLayoutActivity::class.java)) },
                         showArrow = true)
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
-                    SettingsItem(Icons.TwoTone.EmojiSymbols, "按键符号", "26 键上下角标、九键与笔画侧栏、手写和常用符号栏，一处按位置编辑",
+                    SettingsItem(Icons.TwoTone.EmojiSymbols, "按键符号", "26 键、14 键和自定义布局的上下角标，九键与笔画侧栏、手写和常用符号栏，一处按位置编辑",
                         onClick = { context.startActivity(android.content.Intent(context, com.kingzcheung.xime.CustomLayoutActivity::class.java)
                             .putExtra("edit_symbols", true)) },
                         showArrow = true)
@@ -149,10 +151,29 @@ private fun LayoutDisplayPage(
                         "适用于 26 键和 14 键；14 键跨中线的双字母键分体时拆成两个单字母键。间距与尺寸在键盘调整面板中设置。",
                         checked = split, onCheckedChange = { SettingsPreferences.setSplitKeyboardEnabled(context, it) })
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                    val rightG = com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences().splitRightG
+                    SettingsToggleItem(Icons.TwoTone.Keyboard, "右半边也放 G 键",
+                        "26 键分体时，右半 h j k l 那排开头再加一个 G，这一排向右对齐到 p 下面，两只手都能按 G。只改分体键盘，14 键和不分体的键盘不变。",
+                        checked = rightG, onCheckedChange = { SettingsPreferences.setSplitRightGEnabled(context, it) },
+                        lockMessage = if (split) null else "打开上面的「分体键盘」后可用")
+                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     val filled = com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences().fillBlankAreas
                     SettingsToggleItem(Icons.TwoTone.FormatColorFill, "填满留空处",
                         "分体中缝和固定键盘两侧的空白用键盘背景铺满，遮住后面的应用；关闭时镂空，透出后面的内容。",
                         checked = filled, onCheckedChange = { SettingsPreferences.setKeyboardBlankFilled(context, it) })
+                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                    val wideKeys = com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences().wideKeys
+                    SettingsToggleItem(Icons.TwoTone.Straighten, "加宽按键",
+                        "键盘两侧留白和按键之间的横向缝变窄，每个键更宽，手机上不容易按到旁边的键；分体键盘不变。",
+                        checked = wideKeys, onCheckedChange = { SettingsPreferences.setWideKeysEnabled(context, it) })
+                    HorizontalDivider(Modifier.padding(horizontal = 16.dp))
+                    val evenMerged = com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences().evenMergedKeys
+                    SettingsToggleItem(Icons.TwoTone.ViewWeek, "合并键均匀排布",
+                        "14 键和自己排的合并键布局（如 17、18、20 键）里，合并键只比单字母键宽三分之一，单字母键跟着变宽，" +
+                            "每排更匀，小屏上好按。关闭时合并键严格占两个 26 键的位置。分体键盘不变。",
+                        checked = evenMerged, onCheckedChange = { SettingsPreferences.setEvenMergedKeysEnabled(context, it) },
+                        // 分体按 26 键中线拆左右，均匀排布在分体时不起作用：置灰并说明，不让它看着开着却没用。
+                        lockMessage = if (split) "分体键盘开着时不起作用，关掉上面的「分体键盘」后可用" else null)
                     HorizontalDivider(Modifier.padding(horizontal = 16.dp))
                     SettingsItem(Icons.TwoTone.AspectRatio, keyboardPanelTitle(com.kingzcheung.xime.keyboard.KeyboardPanelLaunch.Panel.RESIZE),
                         "高度、宽度、悬浮与分体、透明度，打开键盘菜单里同一个调节面板",
@@ -234,10 +255,45 @@ private fun LayoutDisplayPage(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
 
+                    var wideCandidateSpacing by remember {
+                        mutableStateOf(SettingsPreferences.isWideCandidateSpacing(context))
+                    }
+                    Row(
+                        modifier = Modifier.settingsSearchAnchor("候选词间距加宽")
+                            .fillMaxWidth()
+                            .testTag("wide-candidate-spacing-setting")
+                            .toggleable(
+                                value = wideCandidateSpacing,
+                                role = Role.Switch,
+                                onValueChange = {
+                                    wideCandidateSpacing = it
+                                    SettingsPreferences.setWideCandidateSpacing(context, it)
+                                },
+                            )
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("候选词间距加宽", style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.Medium)
+                            Text("候选栏里候选之间空出约一个字，单字候选不挤在一起",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(checked = wideCandidateSpacing, onCheckedChange = null)
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 16.dp),
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+
                     var showCandidateCancel by remember {
                         mutableStateOf(SettingsPreferences.shouldShowCandidateCancelButton(context))
                     }
-                    Row(
+                    // 图例放在开关下面，随开关实时变化；整块都可点。
+                    Column(
                         modifier = Modifier.settingsSearchAnchor("候选栏取消按钮")
                             .fillMaxWidth()
                             .testTag("candidate-cancel-setting")
@@ -250,29 +306,68 @@ private fun LayoutDisplayPage(
                                 },
                             )
                             .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Column(Modifier.weight(1f)) {
-                            Text("候选栏取消按钮", style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.Medium)
-                            Text("默认关闭，候选词从左侧开始；开启后可点左箭头取消当前输入",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("候选栏取消按钮", style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium)
+                                Text("点候选栏最左边的左箭头，取消当前输入",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(checked = showCandidateCancel, onCheckedChange = null)
                         }
-                        Spacer(Modifier.width(12.dp))
-                        Switch(checked = showCandidateCancel, onCheckedChange = null)
+                        Spacer(Modifier.height(10.dp))
+                        CandidateCancelIllustration(showCandidateCancel)
                     }
                     HorizontalDivider(
                         modifier = Modifier.padding(start = 16.dp),
                         thickness = 0.5.dp,
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                     )
+                    // 只在取消按钮开着时起作用，关着就不显示。
+                    if (showCandidateCancel) {
+                        var associationCancelRight by remember {
+                            mutableStateOf(SettingsPreferences.isAssociationCancelOnRight(context))
+                        }
+                        Row(
+                            modifier = Modifier.settingsSearchAnchor("联想时关闭键放右边")
+                                .fillMaxWidth()
+                                .testTag("association-cancel-right-setting")
+                                .toggleable(
+                                    value = associationCancelRight,
+                                    role = Role.Switch,
+                                    onValueChange = {
+                                        associationCancelRight = it
+                                        SettingsPreferences.setAssociationCancelOnRight(context, it)
+                                    },
+                                )
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("联想时关闭键放右边", style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.Medium)
+                                Text("上屏后出联想词时，左箭头换成右边的 ⊗，点第一个联想词不会点到关闭",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(checked = associationCancelRight, onCheckedChange = null)
+                        }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 16.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                        )
+                    }
 
                     var commentMode by remember { mutableStateOf(SettingsPreferences.candidateCommentMode(context)) }
                     Column(Modifier.settingsSearchAnchor("候选注释")) {
                         Text("候选注释", style = MaterialTheme.typography.bodyLarge,
                             fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp))
-                        Text("26／14／九键共用。显示：始终显示；自动：宽时显示、窄时隐藏；隐藏：始终不显示。",
+                        Text("26／14／九键和手写共用；自动：宽时显示、窄时隐藏。中文手写的注释总是读音。",
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 16.dp))
                         Row(Modifier.fillMaxWidth().height(136.dp).padding(horizontal = 16.dp),
@@ -301,7 +396,7 @@ private fun LayoutDisplayPage(
                         Column(Modifier.settingsSearchAnchor("候选注释内容")) {
                             Text("候选注释内容", style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.Medium, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp))
-                            Text("拼音：显示拼音或编码。释义：中文候选显示英文，中文键盘里混出的英文候选显示中文，九键长按「下一项」或按住 Shift 再选候选就上屏英文单词；选释义时会自动下载释义词典（也在扩展商店的模型“其他”里），查不到的候选仍显示拼音。",
+                            Text("释义：中文候选显示英文，混出的英文候选显示中文，九键长按「下一项」或按住 Shift 再选候选就上屏英文单词；选释义会自动下载释义词典，并把上面的「自动」改成「显示」，查不到的候选仍显示拼音。",
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp))
                             var glossDownloadRequest by remember { mutableStateOf(0) }
@@ -319,6 +414,13 @@ private fun LayoutDisplayPage(
                                             // 刚选释义且词典没下载：直接开始下载，不让用户去商店找。
                                             if (content == com.kingzcheung.xime.settings.CandidateCommentContent.GLOSS &&
                                                 commentContent != content) glossDownloadRequest++
+                                            // 「自动」在手机竖屏（候选栏不到 480dp）不显示注释，选了释义也看不到英文（B 站反馈 10-31）。
+                                            // 选释义就是要看释义：自动改成显示，上面的选择跟着变，想窄屏隐藏可以再改回自动。
+                                            if (content == com.kingzcheung.xime.settings.CandidateCommentContent.GLOSS &&
+                                                commentMode == com.kingzcheung.xime.settings.CandidateCommentMode.AUTO) {
+                                                commentMode = com.kingzcheung.xime.settings.CandidateCommentMode.SHOW
+                                                SettingsPreferences.setCandidateCommentMode(context, commentMode)
+                                            }
                                             commentContent = content
                                             SettingsPreferences.setCandidateCommentContent(context, content)
                                             com.kingzcheung.xime.gloss.CandidateGlossary.prepare(context)
@@ -441,11 +543,25 @@ private fun LayoutDisplayPage(
                 })
             }
 
+            if (page == "key_tips") item { KeyTipsSettings() }
             if (page == "gestures") item { GesturePresetSettings() }
             if (page == "gestures") item {
-                InputExperienceSettings(setOf(InputExperiencePart.SYMBOLS, InputExperiencePart.LANGUAGE_HOLD), "角标与长按")
+                InputExperienceSettings(setOf(InputExperiencePart.SYMBOLS), "角标与长按")
             }
             if (page == "gestures") item { InputExperienceSettings(setOf(InputExperiencePart.CURSOR), "光标与空格") }
+            // 大多数人不会去调的时长、距离滑条收在一起，默认收起（用户 10-31）；设置搜索点中会自动展开。
+            if (page == "gestures") item {
+                InputExperienceSettings(setOf(InputExperiencePart.TIMING), "时长与距离",
+                    collapsedSummary = "长按空格、光标移动距离、长按语言键、!@# 松手时限")
+            }
+            // 隐藏操作的说明（用户 10-31）：这一页最下面一行，点进去是「按键技巧」；它不是设置，不占上面的位置。
+            if (page == "gestures") item {
+                SettingsSection(title = "说明", searchKey = "按键技巧入口", content = {
+                    SettingsItem(Icons.TwoTone.Lightbulb, "按键技巧",
+                        "Shift、Ctrl（!@#）、空格、删除键的隐藏操作", showArrow = true,
+                        onClick = { onOpenLayout("${SettingsRoutes.LayoutDisplay}?page=key_tips") })
+                })
+            }
         }
     }
 }
@@ -454,15 +570,21 @@ private fun LayoutDisplayPage(
 internal val LayoutDisplayPages = listOf(
     Triple("candidates", "候选词", "字号、候选注释（拼音或中英释义）、取消按钮、输入框或候选栏显示"),
     Triple("gestures", "按键与手势", "角标输入方式、上下滑方向、长按语言键、滑动移动光标、长按空格"),
+    // 不在首页列出，从「按键与手势」最下面进入。
+    Triple("key_tips", "按键技巧", "Shift、Ctrl（!@#）、空格、删除键的隐藏操作"),
 )
 
-/** 按键显示：字号、角标提示、点按气泡、底部圆角；放在「主题与外观」。 */
+/** 按键显示：字号、角标提示、点按气泡、顶部和底部圆角；放在「主题与外观」。 */
 @Composable
 internal fun KeyboardAppearanceSettings() {
     val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         InputExperienceSettings(setOf(InputExperiencePart.KEY_TEXT), "按键文字")
                 SettingsSection(title = "角标与气泡", content = {
+                    // 和「双拼键位提示」互锁（InputGestureLocks）：提示写在按键角上，开着时两个角标提示都关着不能开。
+                    val cornerLock = com.kingzcheung.xime.ui.keyboard.InputGestureLocks.lockFor(
+                        com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences(),
+                        com.kingzcheung.xime.ui.keyboard.InputGestureLock.Option.CORNER_HINTS, true)
                     var swipeUpEnabled by remember {
                         mutableStateOf(SettingsPreferences.isSwipeUpHintsEnabled(context))
                     }
@@ -479,13 +601,15 @@ internal fun KeyboardAppearanceSettings() {
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = "显示按键上方的符号提示，输入方式和滑动方向在「按键与手势」设置；上下两项都关就是不带角标的干净键盘，开着滑行输入时 26 键也不显示",
+                                text = "输入方式和滑动方向在「按键与手势」设置",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            if (cornerLock != null && !swipeUpEnabled) SettingsLockNote(cornerLock.message)
                         }
                         Switch(
                             checked = swipeUpEnabled,
+                            enabled = cornerLock == null || swipeUpEnabled,
                             onCheckedChange = { newValue ->
                                 swipeUpEnabled = newValue
                                 SettingsPreferences.setSwipeUpHintsEnabled(context, newValue)
@@ -513,13 +637,15 @@ internal fun KeyboardAppearanceSettings() {
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = "显示按键下方的提示内容，输入方式和滑动方向在「按键与手势」设置；开着滑行输入时 26 键不显示",
+                                text = "输入方式和滑动方向在「按键与手势」设置",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            if (cornerLock != null && !swipeDownEnabled) SettingsLockNote(cornerLock.message)
                         }
                         Switch(
                             checked = swipeDownEnabled,
+                            enabled = cornerLock == null || swipeDownEnabled,
                             onCheckedChange = { newValue ->
                                 swipeDownEnabled = newValue
                                 SettingsPreferences.setSwipeDownHintsEnabled(context, newValue)
@@ -547,7 +673,7 @@ internal fun KeyboardAppearanceSettings() {
                                 fontWeight = FontWeight.Medium
                             )
                             Text(
-                                text = "默认关闭以减少动画开销；开启后点按会显示字符气泡",
+                                text = "点按时显示按下的字符，多一点动画开销",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -559,6 +685,28 @@ internal fun KeyboardAppearanceSettings() {
                                 SettingsPreferences.setShowPressBubble(context, newValue)
                             }
                         )
+                    }
+                })
+                SettingsSection(title = "键盘顶部样式", content = {
+                    var roundedTop by remember { mutableStateOf(SettingsPreferences.roundedKeyboardTop(context)) }
+                    Row(
+                        Modifier.settingsSearchAnchor("顶部圆角").fillMaxWidth().testTag("rounded-keyboard-top-setting")
+                            .toggleable(value = roundedTop, role = Role.Switch, onValueChange = {
+                                roundedTop = it
+                                SettingsPreferences.setRoundedKeyboardTop(context, it)
+                            }).padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("顶部圆角", style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                if (roundedTop) "固定键盘顶部两角为圆角" else "固定键盘顶部直角；悬浮键盘仍是圆角卡片",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Switch(checked = roundedTop, onCheckedChange = null)
                     }
                 })
                 SettingsSection(title = "键盘底部样式", content = {

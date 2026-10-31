@@ -126,4 +126,200 @@ class SetupGuidePlanTest {
             assertFalse(item.title, Regex("Paraformer|Zipformer|SenseVoice|X-ASR").containsMatchIn(item.title + item.reason))
         }
     }
+
+    @Test fun tabletIsCalledATablet() {
+        // 平板上不能写「这台手机」（10-31 平板新装走查）。各种机型、空间、用法都过一遍，所有给人看的文字只说平板。
+        val all = SetupGuidePlanner.managedIds.toSet()
+        for (tier in DeviceModelTier.entries) for (free in listOf(50 * gb, 2 * gb, 500 * mb)) for (voice in VoiceUse.entries) {
+            val bundled = setOf(SpeechModelCatalog.SENSEVOICE, DeviceModelProfiles.BASE, DeviceModelProfiles.SMALL, CandidateModelCatalog.NGRAM)
+            val plan = SetupGuidePlanner.plan(facts(tier, free = free, installed = all - CandidateModelCatalog.NGRAM, inPackage = bundled)
+                .copy(device = "平板"), SetupAnswers(voice, t9 = true, caption = false))
+            val text = (plan.keep + plan.remove).flatMap { listOf(it.title, it.reason) } + plan.notes
+            text.forEach { assertFalse(it, "手机" in it) }
+        }
+        val light = SetupGuidePlanner.plan(facts(DeviceModelTier.LIGHT).copy(device = "平板"),
+            SetupAnswers(VoiceUse.OFTEN, t9 = false, caption = false))
+        assertTrue(light.notes.toString(), light.notes.any { "这台平板" in it })
+    }
+
+    private val doublePinyins = listOf("double_pinyin_flypy" to "小鹤双拼", "double_pinyin_shoudao" to "首道双拼",
+        "double_pinyin_ziranma" to "自然码", "double_pinyin_znabc" to "智能ABC双拼", "double_pinyin_jiajia" to "拼音加加",
+        "double_pinyin_microsoft" to "微软双拼").map { (id, name) ->
+            DoublePinyinChoice(id, name, "xx'xx", lettersOnly = id == "double_pinyin_microsoft") }
+    /** 新装：全拼 26 键，六种内置双拼都在方案栏里，没开模糊音，没有字幕图标。 */
+    private fun typingFacts() = facts(DeviceModelTier.ENHANCED).copy(doublePinyinChoices = doublePinyins,
+        shownDoublePinyin = doublePinyins.map { it.id }.toSet())
+
+    @Test fun keepingEveryAnswerChangesNoInputSetting() {
+        val f = typingFacts().copy(fuzzy = setOf("z_zh"), usesCaption = true)
+        val input = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f)).input
+        assertNull(input.switchTo)
+        assertTrue(input.fuzzyOn.isEmpty() && input.fuzzyOff.isEmpty())
+        assertNull(input.captionIcon)
+        assertFalse(input.downloadWubi)
+        assertEquals(listOf("打字方式还是全拼，不变。"), input.lines)
+        // 全拼的人方案栏里用不到双拼：推荐藏起来，页面上是一个默认打开的开关。
+        assertEquals(doublePinyins.map { it.id }, input.hideDoublePinyin)
+    }
+
+    @Test fun choosingADoublePinyinSwitchesToItAndHidesTheOthers() {
+        val f = typingFacts()
+        val input = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.DOUBLE_PINYIN,
+            doublePinyin = "double_pinyin_ziranma")).input
+        assertEquals("double_pinyin_ziranma", input.switchTo)
+        assertEquals("double_pinyin_ziranma", input.showDoublePinyin)
+        assertEquals(doublePinyins.map { it.id } - "double_pinyin_ziranma", input.hideDoublePinyin)
+        assertTrue(input.lines.toString(), "中文 26 键改用自然码。" in input.lines)
+        assertTrue(input.hideLine!!.startsWith("方案栏里藏起用不到的 5 种双拼：小鹤双拼、首道双拼、智能ABC双拼"))
+    }
+
+    @Test fun onNineKeysTheSchemeIsShownButNotSwitched() {
+        val f = typingFacts().copy(keyboard = KeyboardWay.T9, usesT9 = true)
+        val input = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.WUBI)).input
+        assertNull(input.switchTo)
+        assertTrue(input.useWubi && input.downloadWubi)
+        assertTrue(input.lines.toString(), input.lines.any { it.startsWith("方案栏里打开五笔86") })
+        // 已经在用五笔（如五笔98）就不装、不切。
+        val wubi = typingFacts().copy(typing = TypingWay.WUBI)
+        val same = SetupGuidePlanner.plan(wubi, SetupGuidePlanner.suggest(wubi)).input
+        assertFalse(same.useWubi || same.downloadWubi)
+        assertNull(same.switchTo)
+    }
+
+    @Test fun fuzzyOnlyChangesTheGroupsWhoseAnswerChanged() {
+        // 现在开着 z/zh 和 r/l：选平翘舌＋n/l → 只加 n/l，不把 c/ch、s/sh 也补上，r/l 不在向导里，不动。
+        val f = typingFacts().copy(fuzzy = setOf("z_zh", "r_l"))
+        val more = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(fuzzy = setOf(FuzzyHabit.RETROFLEX, FuzzyHabit.NL))).input
+        assertEquals(setOf("n_l"), more.fuzzyOn)
+        assertTrue(more.fuzzyOff.isEmpty())
+        val none = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(fuzzy = emptySet())).input
+        assertEquals(setOf("z_zh"), none.fuzzyOff)
+        // 双拼、五笔不用模糊音：不改。
+        val double = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.DOUBLE_PINYIN, fuzzy = emptySet())).input
+        assertTrue(double.fuzzyOn.isEmpty() && double.fuzzyOff.isEmpty())
+    }
+
+    @Test fun captionAnswerAddsOrRemovesTheHomeScreenIcon() {
+        val f = typingFacts()
+        assertEquals(true, SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(caption = true)).input.captionIcon)
+        val on = f.copy(usesCaption = true)
+        assertEquals(false, SetupGuidePlanner.plan(on, SetupGuidePlanner.suggest(on).copy(caption = false)).input.captionIcon)
+        // 老人包固定有图标。
+        val elder = on.copy(captionIconChangeable = false)
+        assertNull(SetupGuidePlanner.plan(elder, SetupGuidePlanner.suggest(elder).copy(caption = false)).input.captionIcon)
+    }
+
+    @Test fun otherInputWaysAreKeptAsTheyAre() {
+        val f = typingFacts().copy(typing = TypingWay.KEEP, typingName = "仓颉", keyboard = KeyboardWay.KEEP)
+        assertEquals(TypingWay.KEEP, SetupGuidePlanner.suggest(f).typing)
+        val input = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f)).input
+        assertNull(input.switchTo)
+        assertTrue(input.hideDoublePinyin.isEmpty())
+        assertTrue(input.lines.isEmpty())
+    }
+
+    @Test fun keyboardQuestionStartsAtTheCurrentKeyboardAndChangesNothingWhenKept() {
+        val f = typingFacts()
+        assertEquals(KeyboardWay.QWERTY, SetupGuidePlanner.suggest(f).keyboard)
+        assertEquals(listOf(KeyboardWay.QWERTY, KeyboardWay.K14, KeyboardWay.T9),
+            SetupGuidePlanner.keyboards(f, SetupGuidePlanner.suggest(f)))
+        // QWJRTK 等字母排列也算 26 键：回答不变就不切，不会被换回 QWERTY。
+        val input = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f)).input
+        assertNull(input.switchTo)
+        assertTrue(input.enable.isEmpty())
+        // 五笔只问打法，不问键盘。
+        assertTrue(SetupGuidePlanner.keyboards(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.WUBI)).isEmpty())
+    }
+
+    @Test fun choosingFourteenKeysTurnsTheLayoutOnAndSwitchesToIt() {
+        val f = typingFacts()
+        val full = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(keyboard = KeyboardWay.K14)).input
+        assertEquals("pinyin_14jian", full.switchTo)
+        assertEquals(listOf("pinyin_14jian"), full.enable)
+        assertTrue(full.lines.toString(), "中文换成 14 键，用全拼打。" in full.lines)
+        // 双拼 14 键：打开双拼和中文14键，14 键版本随两者自动出现，不单独打开。
+        val double = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.DOUBLE_PINYIN,
+            keyboard = KeyboardWay.K14)).input
+        assertEquals("double_pinyin_flypy_14jian", double.switchTo)
+        assertEquals("double_pinyin_flypy", double.showDoublePinyin)
+        assertEquals(listOf("pinyin_14jian"), double.enable)
+        assertTrue(double.lines.toString(), "中文换成 14 键，用小鹤双拼打。" in double.lines)
+    }
+
+    @Test fun nineKeysForDoublePinyinUsesItsNineKeyVersion() {
+        val f = typingFacts()
+        val input = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.DOUBLE_PINYIN,
+            doublePinyin = "double_pinyin_ziranma", keyboard = KeyboardWay.T9)).input
+        assertEquals("double_pinyin_ziranma_t9", input.switchTo)
+        assertEquals(listOf("double_pinyin_ziranma_t9"), input.enable)
+        assertTrue(input.lines.toString(), "中文换成九键，用自然码打。" in input.lines)
+    }
+
+    @Test fun fullPinyinOnNineKeysKeepsTheNineKeyModelWithoutAskingAgain() {
+        val f = typingFacts().copy(installed = mapOf(CandidateModelCatalog.NGRAM to 203 * mb))
+        val plan = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(keyboard = KeyboardWay.T9, t9 = false))
+        assertEquals("t9_pinyin", plan.input.switchTo)
+        assertEquals(CandidateModelCatalog.NGRAM, plan.t9Model)
+        // 双拼九键不用九键整句组词模型：照“用九键打字吗”的回答。
+        val double = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.DOUBLE_PINYIN,
+            keyboard = KeyboardWay.T9, t9 = false))
+        assertNull(double.t9Model)
+    }
+
+    @Test fun microsoftDoublePinyinOnlyOffersTwentySixKeys() {
+        val f = typingFacts()
+        val answers = SetupGuidePlanner.suggest(f).copy(typing = TypingWay.DOUBLE_PINYIN, doublePinyin = "double_pinyin_microsoft",
+            keyboard = KeyboardWay.K14)
+        assertEquals(listOf(KeyboardWay.QWERTY), SetupGuidePlanner.keyboards(f, answers))
+        assertEquals(KeyboardWay.QWERTY, SetupGuidePlanner.keyboardOf(f, answers))
+        val input = SetupGuidePlanner.plan(f, answers).input
+        assertEquals("double_pinyin_microsoft", input.switchTo)
+        assertTrue(input.enable.isEmpty())
+    }
+
+    @Test fun otherKeyboardsCanBeKept() {
+        // 现在在 17 键：多一个“保持现在的17键”，默认选它；选双拼时只在方案栏打开，不换键盘。
+        val f = typingFacts().copy(keyboard = KeyboardWay.KEEP, keyboardName = "17键")
+        val answers = SetupGuidePlanner.suggest(f)
+        assertEquals(KeyboardWay.KEEP, answers.keyboard)
+        assertEquals(KeyboardWay.KEEP, SetupGuidePlanner.keyboards(f, answers).last())
+        val input = SetupGuidePlanner.plan(f, answers.copy(typing = TypingWay.DOUBLE_PINYIN)).input
+        assertNull(input.switchTo)
+        assertTrue(input.lines.toString(), input.lines.any { it.startsWith("方案栏里打开小鹤双拼") })
+        // 明确选了 26 键就切过去。
+        assertEquals("rime_ice", SetupGuidePlanner.plan(f, answers.copy(keyboard = KeyboardWay.QWERTY)).input.switchTo)
+    }
+
+    @Test fun switchingToDoublePinyinTurnsOnKeyHintsOnlyForNewcomers() {
+        val f = typingFacts()
+        val toDouble = SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f).copy(typing = TypingWay.DOUBLE_PINYIN)).input
+        assertTrue(toDouble.keyHintsOn)
+        assertTrue(toDouble.lines.toString(), toDouble.lines.any { it.startsWith("打开双拼键位提示") })
+        // 和角标提示互锁：计划里说清楚角标一起关。
+        assertTrue(toDouble.lines.toString(), toDouble.lines.any { it.startsWith("打开双拼键位提示") && "上下角标提示一并关掉" in it })
+        // 本来就用双拼（换一种也算）、已经开着、或不选双拼：不动。
+        val already = f.copy(typing = TypingWay.DOUBLE_PINYIN, doublePinyin = "double_pinyin_flypy")
+        assertFalse(SetupGuidePlanner.plan(already, SetupGuidePlanner.suggest(already).copy(doublePinyin = "double_pinyin_ziranma")).input.keyHintsOn)
+        val on = f.copy(doublePinyinKeyHints = true)
+        assertFalse(SetupGuidePlanner.plan(on, SetupGuidePlanner.suggest(on).copy(typing = TypingWay.DOUBLE_PINYIN)).input.keyHintsOn)
+        assertFalse(SetupGuidePlanner.plan(f, SetupGuidePlanner.suggest(f)).input.keyHintsOn)
+    }
+
+    @Test fun sizeLineSaysWhatGetsDownloadedInsteadOfLookingLikeTidyingGrowsIt() {
+        // 10-31 走查：「现在占 7 MB，整理后 270 MB」读起来像整理反而变大。
+        assertEquals("模型现在占 7 MB。按推荐要下载 263 MB，设好后共占 270 MB。",
+            SetupGuidePlanner.sizeSummary(now = 7 * mb, download = 263 * mb, unpack = 0, removed = 0))
+        assertEquals("模型现在占 600 MB。按推荐要删掉 360 MB，设好后共占 240 MB，比现在少 360 MB。",
+            SetupGuidePlanner.sizeSummary(now = 600 * mb, download = 0, unpack = 0, removed = 360 * mb))
+        assertEquals("模型现在占 7 MB。按推荐要下载 19 MB、从安装包取出 228 MB，设好后共占 254 MB。",
+            SetupGuidePlanner.sizeSummary(now = 7 * mb, download = 19 * mb, unpack = 228 * mb, removed = 0))
+        assertEquals("模型现在占 7 MB，不用下载，也不用删。", SetupGuidePlanner.sizeSummary(7 * mb, 0, 0, 0))
+    }
+
+    @Test fun donePageNamesTheModelsBeingDownloaded() {
+        assertEquals("语音、联想模型", SetupGuidePlanner.kindsText(listOf(SpeechModelCatalog.SENSEVOICE,
+            SpeechModelCatalog.PARAFORMER, DeviceModelProfiles.SMALL)))
+        assertEquals("九键组词模型", SetupGuidePlanner.kindsText(listOf(CandidateModelCatalog.NGRAM)))
+        assertEquals("模型", SetupGuidePlanner.kindsText(listOf("unknown")))
+    }
 }

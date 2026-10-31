@@ -95,6 +95,9 @@ switches:
     states: [ 。，, ．， ]
   - name: traditionalization
     states: [ 简, 繁 ]
+  - name: emoji
+    reset: 0
+    states: [ 无表情, 表情 ]
 
 engine:
   processors:
@@ -117,10 +120,17 @@ engine:
     - t9_date_translator
     - punct_translator
     - script_translator
+    # 生僻字（设置「生僻字」，默认关；关着时只看一下开关就返回），见 lua/cyime_rare_chars.lua。
+    - lua_translator@*cyime_rare_chars
     - t9_english_translator@t9_english
   filters:
     - cyime_candidate_policy
     - t9_filter
+    # 时间、日期、星期后面接当前时间和日期（设置 › 语言与方案 › 中文输出，默认关）。
+    - cyime_datetime
+    - simplifier@emoji
+    # 打符号名出符号（设置 › 语言与方案 › 中文输出，默认关）：加号后面多出 +。
+    - simplifier@cyime_symbols
     - simplifier@traditionalize
     - uniquifier
 
@@ -207,6 +217,20 @@ t9_english:
   completion_limit: 3
 
 # 简/繁（设置 → 语言与方案 → 繁体输出）：与 26 键同一张台湾正体转换表，见 opencc/cyime_s2tw.json。
+# 候选里显示表情（设置 › 语言与方案 › 中文输出，默认关）：打「开心」在词后面多出 😄。
+# 表情表与 26 键雾凇方案共用 opencc/emoji.json；输入法按键前按设置写 emoji 选项（ImeKeyRouter）。
+emoji:
+  option_name: emoji
+  opencc_config: emoji.json
+  inherit_comment: false
+
+# 打符号名出符号（默认关）：打「加号」「问号」「括号」时词后面多出 +、？ ?、（） ()；词本身位置不变。
+# 表与 26 键共用 opencc/cyime_symbols.json；输入法按键前按设置写 cyime_symbol_names 选项（ImeKeyRouter）。
+cyime_symbols:
+  option_name: cyime_symbol_names
+  opencc_config: cyime_symbols.json
+  inherit_comment: false
+
 traditionalize:
   option_name: traditionalization
   opencc_config: cyime_s2tw.json

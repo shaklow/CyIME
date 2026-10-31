@@ -124,15 +124,23 @@ data class CustomKeyboardLayout(
             val speller = Regex("(?ms)^speller:.*?(?=^[a-zA-Z_][a-zA-Z_0-9]*:|\\z)").find(text)
                 ?: error("中文26键缺少拼写器配置")
             check(speller.value.contains("  algebra:")) { "中文26键缺少编码规则" }
-            val rule = "    - xlit/abcdefghijklmnopqrstuvwxyz/${encode("abcdefghijklmnopqrstuvwxyz")}/\n"
-            text = text.replaceRange(speller.range, speller.value.trimEnd() + "\n" + rule + "\n")
+            text = text.replaceRange(speller.range, speller.value.trimEnd() + "\n" + mergedRules() + "\n")
             text = text.replace(Regex("(?m)^  prism:.*$"), "  prism: $id")
             if (!text.contains("  prism: $id")) text = text.replace("translator:\n", "translator:\n  prism: $id\n")
         }
         return text
     }
+    /**
+     * 合并键的拼写规则：每组派生一条，把组里其他字母换成代表字母（键上第一个字母，点按送的就是它），原拼写保留。
+     * 点按打出的全是代表字母，和原来整表 xlit 一样；长按气泡选的另一个字母（如 we 键的 e）也照原拼音认，
+     * 不会被整表替换掉而解成别的字（xlit 时 wen 出“额”）。
+     */
+    fun mergedRules(): String = mergedGroups.joinToString("") { "    - derive/[${it.drop(1)}]/${it[0]}/\n" }
+
     companion object {
         const val EMPTY_SLOT = "_"
+        /** 1.15.19 及以前生成的整表替换规则（字母表 → 代表字母），初始化时换成 [mergedRules]。 */
+        fun legacyRule(layout: CustomKeyboardLayout) = "    - xlit/abcdefghijklmnopqrstuvwxyz/${layout.encode("abcdefghijklmnopqrstuvwxyz")}/\n"
         val HONEYCOMB_ROWS = listOf(6, 7, 6, 7)
         val BASE = listOf("qwertyuiop", "asdfghjkl", "zxcvbnm")
         fun fresh() = CustomKeyboardLayout("custom_pinyin_" + UUID.randomUUID().toString().replace("-", ""), "我的布局", BASE.map { it.map(Char::toString) })
@@ -145,6 +153,8 @@ object CustomKeyboardLayouts {
     const val STATUS = "custom_keyboard_layout_status"
     private var cached: List<CustomKeyboardLayout> by mutableStateOf(emptyList())
     fun find(id: String) = cached.firstOrNull { it.id == id } ?: BuiltinLetterLayouts.find(id)
+    /** 方案用的自建布局：布局自己的拼音方案，或双拼在这个布局上的版本（见 DoublePinyinSchemes.isOnLayout）。 */
+    fun forSchema(id: String) = find(id) ?: DoublePinyinSchemes.layoutOf(id)?.let { cached.firstOrNull { layout -> layout.id == it } }
     fun isCustom(id: String) = id in BuiltinLetterLayouts.ids || id.startsWith("custom_pinyin_")
     @Synchronized fun load(context: Context): List<CustomKeyboardLayout> {
         val file = File(context.filesDir, "custom-keyboard-layouts.json")
@@ -201,6 +211,8 @@ object CustomKeyboardLayouts {
             }
             cached = updated
         }
+        // 双拼在合并键布局上的版本跟着这个布局的合并键重写，启用方案时一起提供。
+        DoublePinyinSchemes.syncLayouts(context)
         SchemaManager.setEnabledSchemas(context, (SchemaManager.getEnabledSchemas(context) + layout.id).distinct())
         notifyChanged(context)
     }
@@ -212,7 +224,8 @@ object CustomKeyboardLayouts {
             val file = File(dir, "${layout.id}.schema.yaml")
             if (!file.isFile) continue
             val old = file.readText()
-            var updated = EnglishCandidatePolicy.install(old)
+            // 旧的整表 xlit 换成逐组派生：长按选的第二个字母按原拼音认（见 mergedRules），点按的结果不变。
+            var updated = EnglishCandidatePolicy.install(old.replace(CustomKeyboardLayout.legacyRule(layout), layout.mergedRules()))
             if (!updated.contains("cyime_neighbor_correction: true")) {
                 val section = Regex("(?ms)^translator:\\r?\\n.*?(?=^[a-zA-Z_][a-zA-Z_0-9]*:|\\z)").find(updated) ?: continue
                 val translator = section.value.replace(Regex("(?m)^  enable_correction:.*\\r?\\n"), "")
@@ -238,6 +251,9 @@ object CustomKeyboardLayouts {
             catch (e: Exception) { if (previous != null) writeAtomically(schema, previous); throw e }
             cached = old.filterNot { it.id == id }
         }
+        CustomLayoutSymbols.clear(context, id)
+        // 删掉双拼在这个布局上的版本；正在用时换回那个双拼方案的 26 键。
+        DoublePinyinSchemes.syncLayouts(context)
         if (SettingsPreferences.getCurrentSchema(context) == id) SettingsPreferences.setCurrentSchema(context, "rime_ice")
         SchemaManager.setEnabledSchemas(context, (remaining + "rime_ice").distinct())
         notifyChanged(context)

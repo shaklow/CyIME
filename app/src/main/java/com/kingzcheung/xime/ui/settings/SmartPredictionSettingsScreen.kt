@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.twotone.AutoAwesome
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.twotone.Backspace
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
@@ -62,6 +63,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.kingzcheung.xime.model.ModelCategory
 import com.kingzcheung.xime.model.ModelManager
+import androidx.compose.ui.res.stringResource
+import com.kingzcheung.xime.R
+import com.kingzcheung.xime.model.DeviceModelProfiles
 import com.kingzcheung.xime.settings.SettingsPreferences
 import com.kingzcheung.xime.viewmodel.SmartPredictionSettingsViewModel
 
@@ -95,7 +99,8 @@ fun SmartPredictionSettingsContent(
 
     // 模型清单来自远程 index，响应式收集以在加载完成后刷新（仅 PREDICTION 类别）
     val allModels by ModelManager.modelsFlow.collectAsStateWithLifecycle()
-    val predictionModels = allModels.filter { it.category == ModelCategory.PREDICTION }
+    // 联想关着时选模型不起作用：「选择模型」和「联想行为」一样只在开着时显示（列表为空就不画这一组）。
+    val predictionModels = allModels.filter { it.category == ModelCategory.PREDICTION }.takeIf { uiState.isEnabled }.orEmpty()
 
     val savedModelId = remember {
         SettingsPreferences.getPredictionSelectedModel(context)
@@ -212,6 +217,9 @@ fun SmartPredictionSettingsContent(
                     var singleMode by remember {
                         mutableStateOf(SettingsPreferences.isSingleAssociationMode(context))
                     }
+                    var deleteSkipsAssociation by remember {
+                        mutableStateOf(SettingsPreferences.isDeleteSkipsAssociation(context))
+                    }
                     SettingsSection(title = "联想行为", content = {
                         SettingsToggleItem(
                             icon = Icons.TwoTone.AutoAwesome,
@@ -221,6 +229,21 @@ fun SmartPredictionSettingsContent(
                             onCheckedChange = {
                                 spaceCommitEnabled = it
                                 SettingsPreferences.setSpaceCommitAssociationEnabled(context, it)
+                            }
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 16.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
+                        SettingsToggleItem(
+                            icon = Icons.AutoMirrored.TwoTone.Backspace,
+                            title = "退格直接删字",
+                            subtitle = "有联想词时，退格直接删掉刚上屏的字，不用先按一下收起联想",
+                            checked = deleteSkipsAssociation,
+                            onCheckedChange = {
+                                deleteSkipsAssociation = it
+                                SettingsPreferences.setDeleteSkipsAssociation(context, it)
                             }
                         )
                         HorizontalDivider(
@@ -256,8 +279,8 @@ fun SmartPredictionSettingsContent(
             }
 
             if (predictionModels.isNotEmpty()) {
-                item {
-                    SettingsSection(title = "选择模型", content = {
+                item { Column {
+                    SettingsSection(title = stringResource(R.string.section_choose_model), searchKey = "选择模型", content = {
                         predictionModels.forEach { model ->
                             PredictionModelCard(
                                 modelInfo = model,
@@ -277,7 +300,9 @@ fun SmartPredictionSettingsContent(
                             }
                         }
                     })
-                }
+                    // 有人看不懂 base / small（用户 10-31 转述）：直接说该选哪个。
+                    SettingsNote(stringResource(R.string.model_prediction_choose_note))
+                } }
             }
 
             item {
@@ -287,9 +312,27 @@ fun SmartPredictionSettingsContent(
                     SettingsToggleItem(
                         icon = Icons.TwoTone.VisibilityOff,
                         title = "无痕模式",
-                        subtitle = "打字不学新词和选词顺序，复制的内容不进剪贴板记录、不同步；密码框始终自动无痕",
+                        subtitle = "打字不学新词和选词顺序；复制的内容不记进键盘剪贴板、不同步，系统的复制粘贴照常能用；密码框始终自动无痕",
                         checked = toggles.incognito,
                         onCheckedChange = { SettingsPreferences.setIncognito(context, it) }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 16.dp),
+                        thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    // 删掉刚上屏的词不学习（B站反馈 10-31，默认关）；无痕开着时本来就什么都不学，置灰。
+                    var unlearnRejected by remember { mutableStateOf(SettingsPreferences.isUnlearnRejectedCommit(context)) }
+                    SettingsToggleItem(
+                        icon = Icons.AutoMirrored.TwoTone.Backspace,
+                        title = "删掉刚打的词不学习",
+                        subtitle = "词一上屏就整个删掉（退格删完或上滑清空），这一次不记进词库，误触打出的怪词不会排到前面",
+                        checked = unlearnRejected,
+                        onCheckedChange = {
+                            unlearnRejected = it
+                            SettingsPreferences.setUnlearnRejectedCommit(context, it)
+                        },
+                        lockMessage = if (toggles.incognito) "无痕模式开着时什么都不学，不需要这项" else null,
                     )
                 })
             }
@@ -384,7 +427,12 @@ private fun PredictionModelCard(
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = modelInfo.name,
+                // 联想两档的名字随界面语言；其他模型（商店里来的）仍用目录里的中文名。
+                text = when (modelInfo.id) {
+                    DeviceModelProfiles.BASE -> stringResource(R.string.model_prediction_base_name)
+                    DeviceModelProfiles.SMALL -> stringResource(R.string.model_prediction_small_name)
+                    else -> modelInfo.name
+                },
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
@@ -409,7 +457,7 @@ private fun PredictionModelCard(
                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 ) {
                     Text(
-                        text = if (isDownloaded) "已下载" else "未下载",
+                        text = stringResource(if (isDownloaded) R.string.model_downloaded else R.string.model_not_downloaded),
                         style = MaterialTheme.typography.labelSmall,
                         color = if (isDownloaded) MaterialTheme.colorScheme.primary
                                else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -440,7 +488,7 @@ private fun PredictionModelCard(
                     )
                     Spacer(Modifier.width(4.dp))
                 }
-                Text(if (isSelected) "使用中" else "使用")
+                Text(stringResource(if (isSelected) R.string.model_in_use else R.string.model_use))
             }
         } else {
             Spacer(modifier = Modifier.width(8.dp))
@@ -454,7 +502,7 @@ private fun PredictionModelCard(
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(4.dp))
-                Text("去商店")
+                Text(stringResource(R.string.model_go_to_store))
             }
         }
     }

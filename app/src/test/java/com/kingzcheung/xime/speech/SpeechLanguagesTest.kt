@@ -56,12 +56,27 @@ class SpeechLanguagesTest {
         assertEquals(SpeechModelCatalog.ZIPFORMER_JA, stored["selected_model_ja"])
     }
 
+    @Test fun japaneseWithNothingDownloadedPointsToTheLightModel() {
+        val context = mock<Context>()
+        val prefs = mock<SharedPreferences>()
+        val stored = mutableMapOf("selected_model" to SpeechModelCatalog.TWO_PASS)
+        whenever(context.filesDir).thenReturn(files.root)
+        whenever(context.getSharedPreferences(any(), any())).thenReturn(prefs)
+        whenever(prefs.getString(any(), anyOrNull())).thenAnswer { stored[it.getArgument<String>(0)] ?: it.getArgument<String?>(1) }
+        val manager = AsrModelManager(context)
+        assertEquals(SpeechModelCatalog.ZIPFORMER_JA_INT8, manager.getSelectedModelId(InputLanguage.JAPANESE))
+        // 只是没选时的指向，不写进设置；用户自己选的原版照旧保留（见上一个用例）。
+        assertNull(stored["selected_model_ja"])
+    }
+
     @Test fun primaryAndCorrectionMustBothSupportTheLanguage() {
         assertTrue(SpeechLanguages.supports(SpeechModelCatalog.ZIPFORMER_TWO_PASS, InputLanguage.CHINESE))
         assertFalse(SpeechLanguages.supports(SpeechModelCatalog.ZIPFORMER_TWO_PASS, InputLanguage.ENGLISH))
         assertFalse(SpeechLanguages.supports(SpeechModelCatalog.TWO_PASS, InputLanguage.JAPANESE))
         assertTrue(SpeechLanguages.supports(SpeechModelCatalog.TWO_PASS, InputLanguage.ENGLISH))
-        InputLanguage.supported.forEach { assertTrue(SpeechLanguages.supports(SpeechModelCatalog.SENSEVOICE, it)) }
+        InputLanguage.speech.forEach { assertTrue(SpeechLanguages.supports(SpeechModelCatalog.SENSEVOICE, it)) }
+        // 没有西班牙语识别器：不能把西班牙语交给 SenseVoice 当中文识别。
+        SpeechModelSelection.primaryIds.forEach { assertFalse(SpeechLanguages.supports(it, InputLanguage.SPANISH)) }
         InputLanguage.entries.forEach { assertFalse(SpeechLanguages.supports("unknown-model", it)) }
         SpeechModelSelection.primaryIds.forEach { assertFalse(SpeechLanguages.supports(it, InputLanguage.UNSPECIFIED)) }
     }

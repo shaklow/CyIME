@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.twotone.Keyboard
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,8 +31,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 韵母按键上的写法：v 写作 ü（lü、lüe），与常见双拼键位图一致。 */
-private fun finalLabel(final: String) = final.replace('v', 'ü')
+/** 韵母按键上的写法：v 写作 ü（lü、lüe），与常见双拼键位图、键盘上的双拼键位提示一致。 */
+private fun finalLabel(final: String) = com.kingzcheung.xime.ui.keyboard.doublePinyinFinalLabel(final)
 
 /** 双拼方案：内置的小鹤、首道、自然码等可复制修改；自定义方案改键位后保存。符号与中文26键（14 键版本与中文14键）相同，字母排列随所选字母布局。 */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -80,12 +81,14 @@ fun DoublePinyinSettingsContent(onBack: () -> Unit) {
         Column(Modifier.fillMaxSize().padding(padding).imePadding().settingsVerticalScroll()
             .padding(horizontal = 16.dp).padding(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             val current = draft
+            val keyboardPrefs = com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences()
             if (current == null) {
                 Text("在「语言与方案」的方案一栏切换双拼。内置方案可以复制后修改键位，保存为自己的方案；" +
                     "符号和词库与中文26键相同。在「语言与方案」点 QWJRTK、Colemak 或自己的字母布局，双拼也按那个排列打；" +
-                    "启用了中文14键时，在方案栏显示的双拼方案在14键上也能用。",
+                    "启用了中文14键或自己合并过按键的布局（如自己排的20键）时，在方案栏显示的双拼方案在那个布局上也能用：点合并键打键上第一个字母，长按选另一个字母。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                DoublePinyinKeyHintsSwitch()
                 Button(onClick = { edit(copyOf(DoublePinyinScheme.FLYPY)) }, enabled = !busy,
                     modifier = Modifier.testTag("double-pinyin-new")) { Text("新建双拼方案") }
                 schemes.forEach { scheme ->
@@ -96,8 +99,10 @@ fun DoublePinyinSettingsContent(onBack: () -> Unit) {
                                 scheme.collisions().size.let { if (it > 0) " · $it 组同码" else "" },
                                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             DoublePinyinKeyMap(scheme)
-                            listOf(Triple(scheme.id, "在方案栏显示", "打开后可在「语言与方案」里选它"),
+                            // 九键没有分号键，ing 在分号上的方案（微软双拼）没有九键版本。
+                            listOfNotNull(Triple(scheme.id, "在方案栏显示", "打开后可在「语言与方案」里选它"),
                                 Triple(DoublePinyinScheme.t9Id(scheme.id), "九键版本", "用九键打${scheme.name}：每个字按两个双拼键所在的数字键")
+                                    .takeUnless { scheme.usesSemicolon }
                             ).forEach { (id, title, subtitle) ->
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
@@ -105,7 +110,7 @@ fun DoublePinyinSettingsContent(onBack: () -> Unit) {
                                         Text(subtitle, style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Switch(id in enabled, enabled = !busy, modifier = Modifier.testTag("double-pinyin-enabled:$id"),
+                                    Switch(id in enabled, enabled = !busy, colors = settingsSwitchColors(), modifier = Modifier.testTag("double-pinyin-enabled:$id"),
                                         onCheckedChange = { on ->
                                             busy = true
                                             scope.launch {
@@ -118,6 +123,22 @@ fun DoublePinyinSettingsContent(onBack: () -> Unit) {
                                             }
                                         })
                                 }
+                            }
+                            // ing 在分号上的方案（微软双拼）：ing 改放 Shift 键，多数手机输入法这样做；所有这类方案共用这一个开关。
+                            // 和「Shift 键分词」互锁：打字时都要占 Shift 键（InputGestureLocks）。
+                            val ingLock = com.kingzcheung.xime.ui.keyboard.InputGestureLocks.lockFor(keyboardPrefs, com.kingzcheung.xime.ui.keyboard.InputGestureLock.Option.SEMICOLON_ON_SHIFT, true)
+                                ?.takeIf { !keyboardPrefs.doublePinyinSemicolonOnShift }
+                            if (scheme.usesSemicolon) Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("ing 放在 Shift 键上", style = MaterialTheme.typography.bodyLarge)
+                                    Text("和多数手机输入法一样：不加分号键，L 在第二排最右边；打了声母后左下角的 Shift 键变成 ing",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    if (ingLock != null) SettingsLockNote(ingLock.message)
+                                }
+                                Switch(keyboardPrefs.doublePinyinSemicolonOnShift, enabled = !busy && ingLock == null, colors = settingsSwitchColors(),
+                                    modifier = Modifier.testTag("double-pinyin-semicolon-on-shift:${scheme.id}"),
+                                    onCheckedChange = { keyboardPrefs.copy(doublePinyinSemicolonOnShift = it).save(context) })
                             }
                             Row {
                                 if (custom) TextButton(onClick = { edit(scheme) }, enabled = !busy) { Text("编辑") }
@@ -208,6 +229,24 @@ fun DoublePinyinSettingsContent(onBack: () -> Unit) {
         }) { Text("删除") } }, dismissButton = { TextButton(onClick = { deleteId = null }) { Text("取消") } }) }
 }
 
+/** 键盘上的双拼键位提示（默认关）：别人提的需求，记不住键位时打开。 */
+@Composable
+private fun DoublePinyinKeyHintsSwitch() {
+    val context = LocalContext.current
+    val saved = com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences()
+    SettingsSection(title = "键盘上的提示") {
+        SettingsToggleItem(Icons.TwoTone.Keyboard, "双拼键位提示",
+            "双拼 26 键每个键上写出它代表的 zh、ch、sh 和韵母，和下面的键位图一样，记不住键位时打开。" +
+                "提示写在按键角上，和上下角标提示不能同时开：先在 主题与外观 › 角标与气泡 关掉两个角标提示；" +
+                "滑动照常出符号。14 键、九键和自己排的合并键布局不显示。",
+            checked = saved.doublePinyinKeyHints,
+            onCheckedChange = { saved.copy(doublePinyinKeyHints = it).save(context) },
+            // 和上下角标提示互锁（InputGestureLocks）；两个都已开着时不锁，关哪个都行。
+            lockMessage = com.kingzcheung.xime.ui.keyboard.InputGestureLocks.lockFor(saved, com.kingzcheung.xime.ui.keyboard.InputGestureLock.Option.DOUBLE_PINYIN_KEY_HINTS, true)
+                ?.takeIf { !saved.doublePinyinKeyHints }?.message)
+    }
+}
+
 /** 26 键键位图：键上是字母、翘舌声母（强调色）和韵母；[onKey] 为空时只显示。 */
 @Composable
 internal fun DoublePinyinKeyMap(scheme: DoublePinyinScheme, highlight: Char? = null, onKey: ((Char) -> Unit)? = null) {
@@ -216,8 +255,10 @@ internal fun DoublePinyinKeyMap(scheme: DoublePinyinScheme, highlight: Char? = n
         val gap = 3.dp
         val slot = (maxWidth - gap * 9) / 10
         Column(verticalArrangement = Arrangement.spacedBy(gap)) {
-            listOf("qwertyuiop", "asdfghjkl", "zxcvbnm").forEachIndexed { row, letters ->
-                Row(Modifier.padding(start = (slot + gap) * (row * 0.5f)), horizontalArrangement = Arrangement.spacedBy(gap)) {
+            // ing 在分号上的方案第二排多一个分号键，和键盘上一样排满十格。
+            listOf("qwertyuiop", if (';' in labels) "asdfghjkl;" else "asdfghjkl", "zxcvbnm").forEachIndexed { row, letters ->
+                Row(Modifier.padding(start = (slot + gap) * (if (letters.length == 10) 0f else row * 0.5f)),
+                    horizontalArrangement = Arrangement.spacedBy(gap)) {
                     letters.forEach { key ->
                         val (initial, finals) = labels.getValue(key)
                         val chosen = key == highlight

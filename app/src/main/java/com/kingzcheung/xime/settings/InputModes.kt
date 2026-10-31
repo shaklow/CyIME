@@ -7,7 +7,8 @@ object InputModes {
     const val ENGLISH = "__xime_english"
     const val ORDER_KEY = "input_mode_order"
     private const val LANGUAGE_ORDER_KEY = "input_language_order"
-    val defaultModeOrder = listOf("rime_ice", "t9_pinyin", "double_pinyin_flypy", "pinyin_14jian", "japanese", "japanese_kana", ENGLISH, QwjrtkLayout.ID)
+    /** 字母排列（QWJRTK、Cyletix10、Colemak、Typewise、自定义布局）不在这里：没排过序时它们排在各语言最后。 */
+    val defaultModeOrder = listOf("rime_ice", "t9_pinyin", "double_pinyin_flypy", "pinyin_14jian", "japanese", "japanese_kana", ENGLISH, SpanishSchemas.ID)
 
     /** Languages without a saved position: Chinese, then English, then the rest (Japanese never jumps ahead of English). */
     private val defaultLanguageOrder: List<InputLanguage>
@@ -50,7 +51,7 @@ object InputModes {
         val ordered = canonicalOrder.distinct().mapNotNull { byId[it] }
         val used = ordered.mapTo(mutableSetOf()) { it.schemaId }
         return ordered + unique.filterNot { it.schemaId in used }
-            .let { remaining -> if (order.isEmpty()) remaining else remaining.sortedBy { it.schemaId == QwjrtkLayout.ID } }
+            .let { remaining -> if (order.isEmpty()) remaining else remaining.sortedBy { CustomKeyboardLayouts.isCustom(it.schemaId) } }
     }
 
     fun ordered(context: Context, schemas: List<SchemaInfo>): List<SchemaInfo> =
@@ -117,9 +118,11 @@ object InputModes {
     }
 
     /** Explicit product choice; passive session persistence must not overwrite this selection. */
-    fun selectProfile(context: Context, entry: SchemaInfo) {
+    fun selectProfile(context: Context, entry: SchemaInfo) = selectProfile(context, entry.schemaId, entry.profile.language)
+
+    fun selectProfile(context: Context, schemaId: String, language: InputLanguage = languageOf(schemaId)) {
         SettingsPreferences.getPrefsPublic(context).edit()
-            .putString("selected_input_profile_${entry.profile.language.id}", entry.schemaId).apply()
+            .putString("selected_input_profile_${language.id}", schemaId).apply()
     }
 
     fun rememberMode(context: Context, schemaId: String, language: InputLanguage = languageOf(schemaId)) {

@@ -98,4 +98,54 @@ class LetterKeyboardFrameTest {
                 }
             }
     }
+
+    /** 「合并键均匀排布」关：与 26 键键缝严格对齐，合并键占字母数个格；26 键、非加权行每键一份。 */
+    @Test fun strictSpanIsLetterCount() {
+        (families.flatten().flatten()).forEach { key ->
+            assertEquals(key.length.toFloat(), letterKeySpan(key, weighted = true), 0f)
+            assertEquals(1f, letterKeySpan(key, weighted = false, evenMerged = true), 0f)
+        }
+    }
+
+    /**
+     * 打开后合并键只比单字母键宽三分之一（参考图里 WE 键帽约是 Q 的 1.32 倍）。
+     * 整行宽度仍是 26 键网格给这一行的那份，单字母键因此变宽：18 键第一行 Q 从 1 格到 1.25 格，WE 从 2 格到 1.67 格。
+     */
+    @Test fun evenSpanNarrowsMergedKeysAndWidensSingles() {
+        assertEquals(1f, letterKeySpan("q", true, evenMerged = true), 0f)
+        assertEquals(4f / 3f, letterKeySpan("we", true, evenMerged = true), 1e-6f)
+        val row = eighteen[0]
+        val units = row.sumOf { it.length }.toFloat()
+        val spans = row.map { letterKeySpan(it, true, evenMerged = true) }
+        val widths = spans.map { it / spans.sum() * units }
+        assertEquals(10f, widths.sum(), 1e-4f)
+        assertEquals(1.25f, widths[row.indexOf("q")], 1e-4f)
+        assertEquals(1.25f * 4f / 3f, widths[row.indexOf("we")], 1e-4f)
+        // 每排单字母键宽度接近：第一排 1.25 格，第二排 9/7 格，第三排 7/(17/3) 格，差不到 5%。
+        val singles = eighteen.map { r ->
+            val s = r.map { letterKeySpan(it, true, evenMerged = true) }
+            r.sumOf { it.length } / s.sum()
+        }
+        assertTrue(singles.max() / singles.min() < 1.05f)
+    }
+
+    /** 14 键大写时拆键：均匀排布下拆开的两个字母各占合并键的一半，每个字母的左边缘与拆开前同位；严格对齐时各 1 份。 */
+    @Test fun fourteenSplitKeepsLetterPositions() {
+        fourteen.forEach { row ->
+            for (even in listOf(false, true)) {
+                val whole = row.map { letterKeySpan(it, true, even) }
+                val split = splitPairSpans(row, even)
+                assertEquals(whole.sum(), split.sum(), 1e-5f)
+                val letterStarts = mutableListOf<Float>()
+                var x = 0f
+                row.forEachIndexed { i, key -> key.forEachIndexed { j, _ -> letterStarts += x + whole[i] / key.length * j }; x += whole[i] }
+                val splitStarts = split.runningFold(0f) { acc, w -> acc + w }.dropLast(1)
+                letterStarts.zip(splitStarts).forEach { (a, b) -> assertEquals(a, b, 1e-5f) }
+                if (!even) split.forEach { assertEquals(1f, it, 0f) }
+            }
+        }
+        // 第二排 as df gh jk l：l 从 1/9 行宽变成 1/(4×4/3+1)。
+        val spans = fourteen[1].map { letterKeySpan(it, true, true) }
+        assertEquals(1f / (16f / 3f + 1f), spans.last() / spans.sum(), 1e-5f)
+    }
 }

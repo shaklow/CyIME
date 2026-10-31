@@ -126,6 +126,7 @@ fun KeyboardLayoutScreen(
                         uiState = uiState,
                         isAsciiMode = false,
                         modifier = modifier,
+                        candidateState = candidateState,
                     )
                 }
             }
@@ -163,6 +164,7 @@ fun KeyboardLayoutScreen(
                     isFloatingMode = uiState.isFloatingMode,
                     specialKeyTextColor = specialKeyTextColor,
                     isJapaneseKana = isJapaneseKana,
+                    enterKeyText = uiState.enterKeyText,
                 )
             }
 
@@ -170,6 +172,7 @@ fun KeyboardLayoutScreen(
                 CommonSymbolKeyboardLayout(
                     onKeyPress = onKeyPress,
                     isAsciiMode = uiState.isAsciiMode,
+                    enterKeyText = uiState.enterKeyText,
                     keyBackgroundColor = keyBgColor,
                     keyTextColor = keyTextColor,
                     specialKeyBackgroundColor = specialKeyBgColor,

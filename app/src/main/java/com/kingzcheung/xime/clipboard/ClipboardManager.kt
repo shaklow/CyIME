@@ -15,6 +15,7 @@ import android.util.Log
 import androidx.core.content.FileProvider
 import com.kingzcheung.xime.clipboard.db.ClipboardDatabase
 import com.kingzcheung.xime.clipboard.db.ClipboardEntry
+import com.kingzcheung.xime.clipboard.db.ClipboardImportRow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -55,8 +56,22 @@ class ClipboardManager private constructor(private val context: Context) {
         private const val INTERNAL_IMAGE_CLIP_LABEL = "cyime_image"
         /** Label of text written by clipboard sync, so history files it as received from another device. */
         internal const val RECEIVED_CLIP_LABEL = "cyime_received"
-        /** 短信验证码只用一次：自动复制 10 分钟后从候选栏和系统剪贴板删掉。 */
+        /** 短信验证码只用一次：自动复制 10 分钟后从系统剪贴板删掉。 */
         internal const val SMS_CODE_LIFETIME_MS = 10 * 60_000L
+        /** 候选栏只在短信到达后的 3 分钟内提示验证码；之后仍可从系统剪贴板粘贴，直到 10 分钟清掉。 */
+        internal const val SMS_CODE_SUGGESTION_MS = 3 * 60_000L
+
+        /** 开着无痕时第一次复制的提示（剪贴板面板顶上另有一行同样意思的说明）。 */
+        internal const val INCOGNITO_COPY_NOTICE =
+            "无痕模式开着：复制的内容不记进键盘剪贴板，粘贴照常能用。在键盘菜单点「无痕」可以关掉"
+
+        /** The candidate-bar pill shows a code only shortly after the SMS arrived. */
+        internal fun smsCodeSuggested(timestamp: Long, now: Long): Boolean =
+            now - timestamp < SMS_CODE_SUGGESTION_MS
+
+        /** The code already sits right before the cursor: typed, pasted or filled in some other way. */
+        internal fun smsCodeEntered(code: String, textBeforeCursor: CharSequence?): Boolean =
+            code.isNotEmpty() && textBeforeCursor != null && textBeforeCursor.endsWith(code)
 
         @Volatile
         private var instance: ClipboardManager? = null
@@ -78,6 +93,31 @@ class ClipboardManager private constructor(private val context: Context) {
         readClipboard()
     }
 
+    /** 这次开着无痕后已经提示过「复制的内容没记进来」；无痕开关一变就重新算。 */
+    @Volatile private var incognitoCopyNoticed = false
+    private val incognitoSwitchListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == com.kingzcheung.xime.settings.SettingsPreferences.KEY_INCOGNITO) incognitoCopyNoticed = false
+    }
+
+    init {
+        com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(context)
+            .registerOnSharedPreferenceChangeListener(incognitoSwitchListener)
+    }
+
+    /**
+     * 好多人开了无痕以为复制坏了（用户 10-31）：无痕只是不记进键盘剪贴板、不同步，系统复制粘贴照常。
+     * 开着无痕后第一次复制时提示一次，不每次都弹。
+     */
+    private fun noticeIncognitoCopy() {
+        if (incognitoCopyNoticed) return
+        incognitoCopyNoticed = true
+        Handler(Looper.getMainLooper()).post {
+            runCatching {
+                android.widget.Toast.makeText(context, INCOGNITO_COPY_NOTICE, android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private fun readClipboard(retries: Int = 3) {
         try {
             val clipData = androidClipboardManager.primaryClip
@@ -86,12 +126,18 @@ class ClipboardManager private constructor(private val context: Context) {
                 // 系统标记为敏感（如密码管理器复制的密码）或无痕中：不进入历史、图片预览与同步。
                 val clipKey = PrivateClipMemory.key(clipData.description.timestamp,
                     item.text ?: item.uri?.toString() ?: item.intent?.toUri(0))
-                val privateNow = clipData.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true ||
-                    com.kingzcheung.xime.settings.IncognitoState.active ||
-                    com.kingzcheung.xime.settings.SettingsPreferences.isIncognito(context)
+                val sensitive = clipData.description.extras?.getBoolean("android.content.extra.IS_SENSITIVE", false) == true
+                val manualIncognito = com.kingzcheung.xime.settings.SettingsPreferences.isIncognito(context)
+                val privateNow = sensitive || com.kingzcheung.xime.settings.IncognitoState.active || manualIncognito
+                // 手动无痕挡下的一次新复制（不是密码、不是本来就私密的那条）：第一次提示为什么没记进来。
+                val incognitoCopy = manualIncognito && !sensitive && clipKey !in privateClips &&
+                    clipData.description.label != INTERNAL_IMAGE_CLIP_LABEL &&
+                    clipData.description.label != VerificationCodeSmsReceiver.CLIP_LABEL &&
+                    clipData.description.label != RECEIVED_CLIP_LABEL
                 // A clip copied in a password field (or incognito) stays private: re-reading it within
                 // the next 30 s from a normal field once saved it to history.
                 if (privateNow) privateClips.remember(clipKey)
+                if (incognitoCopy) noticeIncognitoCopy()
                 val private = privateNow || clipKey in privateClips
                 val imageMime = (0 until clipData.description.mimeTypeCount).map { clipData.description.getMimeType(it) }
                     .firstOrNull { it.startsWith("image/") }
@@ -128,8 +174,14 @@ class ClipboardManager private constructor(private val context: Context) {
                             expireSmsCode(timestamp)
                         } else if (lastSmsClipTimestamp != timestamp) {
                             lastSmsClipTimestamp = timestamp
-                            _verificationCode.value = ClipboardItem(text = text, timestamp = timestamp)
-                            Handler(Looper.getMainLooper()).postDelayed({ expireSmsCode(timestamp) }, remaining)
+                            val handler = Handler(Looper.getMainLooper())
+                            val now = System.currentTimeMillis()
+                            if (smsCodeSuggested(timestamp, now)) {
+                                _verificationCode.value = ClipboardItem(text = text, timestamp = timestamp)
+                                handler.postDelayed({ dismissVerificationCode(timestamp) },
+                                    timestamp + SMS_CODE_SUGGESTION_MS - now)
+                            }
+                            handler.postDelayed({ expireSmsCode(timestamp) }, remaining)
                         }
                         return
                     }
@@ -148,6 +200,15 @@ class ClipboardManager private constructor(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error reading clipboard", e)
         }
+    }
+
+    /**
+     * Stops suggesting the SMS code on the candidate bar (dismissed, entered, or shown long enough).
+     * The system clipboard keeps it until [expireSmsCode], so a manual paste still works.
+     */
+    fun dismissVerificationCode(timestamp: Long? = null) {
+        val code = _verificationCode.value ?: return
+        if (timestamp == null || code.timestamp == timestamp) _verificationCode.value = null
     }
 
     /** Drops an expired SMS code; clears the system clipboard only while it still holds that same code. */
@@ -237,6 +298,44 @@ class ClipboardManager private constructor(private val context: Context) {
     suspend fun exportItems(): List<ClipboardItem> {
         clipboardPinsReady.await()
         return dao.observeAll().first().map { it.toClipboardItem() }
+    }
+
+    /**
+     * Records read from an import file the user chose. Fixed records go in first, then history in
+     * file order, so a full clipboard leaves out the oldest history. Records keep their own time;
+     * text already here is not added twice. A record in a group is a fixed one; a group missing here
+     * is made. Nothing is sent to clipboard sync: this is not a copy.
+     */
+    internal suspend fun importItems(clips: List<ImportedClip>): ClipboardImportResult {
+        clipboardPinsReady.await()
+        val capacity = ClipboardCapacity.capacity(context.filesDir.usableSpace)
+        var stored = dao.observeStoredBytes().first()
+        val now = System.currentTimeMillis()
+        val joins = linkedMapOf<String, MutableList<String>>()
+        var added = 0; var pinned = 0; var existing = 0; var notSaved = 0
+        val ordered = clips.withIndex().sortedByDescending { it.value.pinned || it.value.group != null }
+        for ((index, clip) in ordered) {
+            if (!ClipboardCapacity.fitsRow(clip.text)) { notSaved++; continue }
+            val fixed = clip.pinned || clip.group != null
+            val key = searchKey(clip.text)
+            val bytes = ClipboardCapacity.recordBytes(clip.text, key)
+            val row = dao.importRecord(clip.text, clip.code, clip.timestamp.takeIf { it > 0 } ?: (now - index),
+                fixed, key, ClipboardCapacity.accepts(stored, bytes, capacity))
+            when (row.outcome) {
+                ClipboardImportRow.ADDED -> { added++; if (fixed) pinned++; stored += bytes }
+                ClipboardImportRow.EXISTING -> existing++
+                else -> { notSaved++; continue }
+            }
+            clip.group?.let { joins.getOrPut(it) { mutableListOf() }.add("text:${row.id}") }
+        }
+        val groups = ClipboardGroupStore.getInstance(context)
+        for ((name, keys) in joins) {
+            val id = groups.idForName(name) ?: continue
+            // A record already in a group stays where the user put it.
+            val members = groups.state.value.members
+            groups.assign(keys.filter { it !in members }, id)
+        }
+        return ClipboardImportResult(added, pinned, existing, notSaved)
     }
 
     private fun searchKey(text: String) = ClipboardSearch.key(text, AndroidPinyinInitials::initialOf)
@@ -541,14 +640,16 @@ class ClipboardManager private constructor(private val context: Context) {
         addPinnedText(text, code)
     }
 
-    fun addPinnedText(text: String, code: String = "") {
+    /** [groupId]: the clipboard group the fixed record goes into (added from that group's tab). */
+    fun addPinnedText(text: String, code: String = "", groupId: String? = null) {
         if (text.isBlank() || !ClipboardCapacity.fitsRow(text)) return
         scope.launch {
             clipboardPinsReady.await()
             val key = searchKey(text)
             // Text already saved is fixed in place and needs no room.
             if (dao.findSameText(text) == null && !hasRoomFor(text, key)) return@launch
-            dao.addPinned(text, code.trim(), System.currentTimeMillis(), key)
+            val id = dao.addPinned(text, code.trim(), System.currentTimeMillis(), key)
+            groupId?.let { ClipboardGroupStore.getInstance(context).assign(setOf("text:$id"), it) }
         }
     }
 
@@ -577,7 +678,7 @@ class ClipboardManager private constructor(private val context: Context) {
         val now = System.currentTimeMillis()
         val cutoff = now - seconds * 1000L
         // 候选栏只展示未消费的最近剪贴板项（用户点选上屏后标记 consumed 不再显示）
-        val sms = _verificationCode.value?.takeIf { it.timestamp >= now - SMS_CODE_LIFETIME_MS }
+        val sms = _verificationCode.value?.takeIf { smsCodeSuggested(it.timestamp, now) }
         return listOfNotNull(sms) + _clipboardItems.value.filter { it.timestamp >= cutoff && !it.consumed && it.text != sms?.text }
     }
 

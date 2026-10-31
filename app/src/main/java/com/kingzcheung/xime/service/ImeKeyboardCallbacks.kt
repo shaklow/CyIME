@@ -83,7 +83,9 @@ internal fun rememberImeKeyboardCallbacks(
                 if (service.keyboardCallbacks?.onPreeditKeyInput?.invoke(key) != true) {
                     val numberPanel = service.keyboardViewModel.keyboardState.value is com.kingzcheung.xime.ui.keyboard.KeyboardLayoutState.Number
                     val separator = key == "'" && service.candidateState.value.isComposing && !service.uiState.value.isAsciiMode
-                    if (!numberPanel && !separator && isLiteralPunctuation(key)) {
+                    // 微软双拼的 ing 在分号上：分号键交给按键队列，打字中送进 Rime 组码，没在打字时照旧按标点上屏（见 ImeKeyRouter）。
+                    val semicolonCode = key == ";" && service.keyRouter.semicolonIsCode()
+                    if (!numberPanel && !separator && !semicolonCode && isLiteralPunctuation(key)) {
                         service.textCommit.commitLiteralText(key)
                     } else {
                         val mergedKey = com.kingzcheung.xime.rime.MergedLetterInput.isGroup(key,
@@ -137,6 +139,8 @@ internal fun rememberImeKeyboardCallbacks(
             onDismissClipboardPreview = {
                 service.candidateState.value.clipboardImage?.let { service.clipboardManager.images.dismissPreview(it.uri) }
                 if (service.candidateState.value.isShowingRecentClipboard) {
+                    // 关掉过的短信验证码不再在下次弹出键盘时出现；系统剪贴板里照旧留到 10 分钟。
+                    if (service.candidateState.value.smsVerificationCode != null) service.clipboardManager.dismissVerificationCode()
                     service.candidateState.value = service.candidateState.value.copy(
                         candidates = emptyList(),
                         candidateComments = emptyList(),
@@ -248,6 +252,9 @@ internal fun rememberImeKeyboardCallbacks(
                 if (!enabled) {
                     // 长按抬手：结束语音会话（提交当前已识别文本并停止识别）
                     service.endVoiceSession()
+                } else if (!service.uiState.value.isVoiceMode && !service.uiState.value.isSttEnabled) {
+                    // 「语音转文本」总开关关着：屏幕键盘也不开麦，与物理键盘 Alt+H 同一句提示。
+                    android.widget.Toast.makeText(service, "请先在设置中启用语音输入", android.widget.Toast.LENGTH_SHORT).show()
                 } else if (!service.uiState.value.isVoiceMode && !service.editorInputPolicy.locksNativeInput) {
                     service.uiState.value = service.uiState.value.copy(
                         isVoiceMode = true,
@@ -271,6 +278,9 @@ internal fun rememberImeKeyboardCallbacks(
                 if (state.isVoiceMode && state.voiceSticky) {
                     // 再次点击麦克风：停止录音并提交转录。
                     service.endVoiceSession()
+                } else if (!state.isVoiceMode && !state.isSttEnabled) {
+                    // 「语音转文本」总开关关着：工具栏麦克风和长按空格说话都不开麦（原来只有物理键盘 Alt+H 认这个开关）。
+                    android.widget.Toast.makeText(service, "请先在设置中启用语音输入", android.widget.Toast.LENGTH_SHORT).show()
                 } else if (!state.isVoiceMode && !service.editorInputPolicy.locksNativeInput) {
                     // 工具栏独立语音组件，不占用空格或改变键盘页面。
                     service.feedbackManager.playKeySound("voice_start")
@@ -451,7 +461,7 @@ internal fun rememberImeKeyboardCallbacks(
                 // 候选栏模式只在候选栏显示，输入框模式写在 composing 区里，**都没有写入正文**。
                 // 历史实现把 C++ 的"撤销段数"当成正文字符数调用 deleteBeforeCursor(count)，
                 // 直接把光标前的正文删掉（2026-09-25 真机实证：选词后退格删掉正文）。
-                if (SettingsPreferences.getInputTextLocation(service)
+                if (TerminalEditor.inputTextLocation(service)
                     == SettingsPreferences.INPUT_TEXT_INPUT_BOX) {
                     service.endComposingInputBox()
                 }

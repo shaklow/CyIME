@@ -151,7 +151,9 @@ class AsrModelManager(private val context: Context) {
 
     /** Language choices are independent. Legacy global choices remain a read-only migration fallback. */
     fun getSelectedModelId(language: InputLanguage): String {
-        require(language in InputLanguage.supported) { "当前方案未标注语言，请先选择输入语言" }
+        require(language in InputLanguage.speech) {
+            if (language == InputLanguage.UNSPECIFIED) "当前方案未标注语言，请先选择输入语言" else "暂时没有${language.displayName}语音识别"
+        }
         preferences.getString("selected_model_${language.id}", null)?.let { stored ->
             val mode = SpeechModelSelection.withoutRetiredCorrector(stored)
             if (mode != stored) {
@@ -164,7 +166,8 @@ class AsrModelManager(private val context: Context) {
         if (SpeechLanguages.supports(legacy, language)) return withDefaultCorrection(legacy, language)
         return runCatching { SpeechLanguages.select(language, legacy) { selection(it, language).ready } }.getOrElse {
             when (language) {
-                InputLanguage.JAPANESE -> SpeechModelCatalog.ZIPFORMER_JA
+                // 一个日语模型都没下载时：指向 153 MB 的轻量版（和自动选择、开箱引导的先后一致），不是 586 MB 的原版。
+                InputLanguage.JAPANESE -> SpeechModelCatalog.ZIPFORMER_JA_INT8
                 InputLanguage.ENGLISH -> SpeechModelCatalog.PARAFORMER
                 else -> com.kingzcheung.xime.model.DeviceDefaults.voiceModel(context)
             }

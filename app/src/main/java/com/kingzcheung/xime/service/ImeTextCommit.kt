@@ -173,9 +173,10 @@ internal class ImeTextCommit(private val service: XimeInputMethodService) {
      * 先结束当前候选，再提交字面内容；手势预览不走此入口。
      */
     internal fun isFullWidthPunctuation(): Boolean {
-        // 全角/半角只作用于中文与日文：英文（ASCII）模式始终输出半角标点。
+        // 全角/半角只作用于中文与日文：英文（ASCII）模式和西班牙语始终输出半角标点。
         // 日文的英数模式除外：全角英数、全角空格是日文输入的常用写法，跟随用户的选择。
         if (service.uiState.value.isAsciiMode && !isJapaneseProfile()) return false
+        if (service.uiState.value.inputProfile.language == com.kingzcheung.xime.settings.InputLanguage.SPANISH) return false
         return punctuationWidthChoice()
     }
 
@@ -200,10 +201,24 @@ internal class ImeTextCommit(private val service: XimeInputMethodService) {
     }
 
     internal fun commitLiteralText(text: String, preserveWidth: Boolean = false, hardware: Boolean = false) {
-        if (text.isEmpty()) return
+        val submit = literalSubmission(text, preserveWidth, hardware) ?: return
+        val t9Queue = if (isT9Schema(service.uiState.value.currentSchemaId) && !service.uiState.value.isAsciiMode) {
+            service.keyboardCallbacks?.onT9RunLiteralInput
+        } else null
+        if (t9Queue != null) t9Queue(submit) else service.keyRouter.postRimeJob { submit() }
+    }
+
+    /**
+     * 上屏一个标点的那一步（含成对符号、英文自动空格、先把打着的字母原样上屏）；[commitLiteralText] 把它排进按键队列。
+     * 已经在按键队列里的命令直接调用它，保持和后面按键的先后（微软双拼没在打字时点的分号键）。
+     */
+    internal fun literalSubmission(text: String, preserveWidth: Boolean = false, hardware: Boolean = false): (suspend () -> Unit)? {
+        if (text.isEmpty()) return null
         val literal = keyboardLiteral(text, preserveWidth = preserveWidth, hardware = hardware)
         // 成对符号只管屏幕键盘；实体键盘的符号多数由引擎处理，只配一部分反而不一致。
-        val (paired, caret) = if (!hardware && com.kingzcheung.xime.settings.SettingsPreferences.isPairedSymbolsEnabled(service))
+        // 终端不认光标回退：补上的结尾会留在光标前面。
+        val (paired, caret) = if (!hardware && !service.isTerminalEditor() &&
+            com.kingzcheung.xime.settings.SettingsPreferences.isPairedSymbolsEnabled(service))
             PairedSymbols.commitFor(literal) else literal to CommitCaret.NONE
         service.voiceRecognitionHandler.abandonPendingOnManualInput()
         val owner = service.uiState.value.inputSessionId
@@ -213,6 +228,10 @@ internal class ImeTextCommit(private val service: XimeInputMethodService) {
                 service.keyRouter.commitDirectFieldLiteral(literal)
                 return@literal
             }
+            // 角标、符号面板打的标点同样跟英文选词后自动补的空格换位置（默认关）。
+            if (service.keyRouter.englishAutoSpace.isArmed && service.keyRouter.consumeEnglishAutoSpace(literal)) return@literal
+            // 英文标点后自动加空格（默认关）：只管屏幕键盘，成对符号不在其中。
+            if (!hardware && paired == literal && service.keyRouter.commitEnglishPunctuationSpace(literal)) return@literal
             val engine = service.rimeEngine
             if (isT9Schema(service.uiState.value.currentSchemaId)) {
                 // 前驱九键已结束，但它的候选刷新在 Main 队列；先让这一帧同步落地。
@@ -222,10 +241,7 @@ internal class ImeTextCommit(private val service: XimeInputMethodService) {
             if (owner != service.uiState.value.inputSessionId) return@literal
             commitCompositionAndLiteral(paired, asTyped = true, caret = caret)
         }
-        val t9Queue = if (isT9Schema(service.uiState.value.currentSchemaId) && !service.uiState.value.isAsciiMode) {
-            service.keyboardCallbacks?.onT9RunLiteralInput
-        } else null
-        if (t9Queue != null) t9Queue(submit) else service.keyRouter.postRimeJob { submit() }
+        return submit
     }
 
     /** One editor transaction for prefix + literal, reused when leaving a typing panel.

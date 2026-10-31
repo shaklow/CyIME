@@ -184,11 +184,19 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
         return true
     }
     
+    /**
+     * 设置页存了自定义布局：重新部署并切回当前方案。
+     * 不挂在某个输入框上（与自定义短语同样做法）：部署要几秒，期间设置页换了焦点或键盘收起都会换一代输入会话，
+     * 挂着旧会话的任务一碰引擎就被当作过期命令取消，提示「应用失败：Expired input command」（2026-10-31 平板）。
+     */
     internal fun applyCustomLayouts() {
-        service.keyRouter.postRimeJob {
+        service.inputCommands.submit(kind = "deploy") {
             val prefs = SettingsPreferences.getPrefsPublic(service)
             try {
                 KeysConfigHelper.loadConfig(service)
+                // 布局、双拼键位改过，方案的拼写规则就变了：模糊音补丁里抄的那份规则跟着重写，免得盖住新键位。
+                runCatching { com.kingzcheung.xime.settings.SpellingPatches.sync(service) }
+                    .onFailure { FileLogger.e(XimeInputMethodService.TAG, "Failed to sync spelling patches", it) }
                 check(RimeConfigHelper.ensureDeployment(service)) { "方案部署失败" }
                 val id = SettingsPreferences.getCurrentSchema(service)
                 check(service.rimeEngine.switchSchema(id)) { "无法恢复当前输入方案" }
@@ -199,6 +207,24 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                 }
             } catch (e: Exception) {
                 prefs.edit().putString(com.kingzcheung.xime.settings.CustomKeyboardLayouts.STATUS, "已保存，但应用失败：${e.message}；可在「已安装的方案」点「应用方案更改」重试").apply()
+            }
+        }
+    }
+
+    /** 模糊音等拼写补丁已由设置页写好：增量部署改过的方案，再切回当前方案让会话用上新规则。 */
+    internal fun applySpellingPatches() {
+        // 同 [applyCustomLayouts]：不挂在输入框上，部署中换焦点不会让它半途作废。
+        service.inputCommands.submit(kind = "deploy") {
+            try {
+                check(RimeConfigHelper.ensureDeployment(service)) { "方案部署失败" }
+                val id = SettingsPreferences.getCurrentSchema(service)
+                check(service.rimeEngine.switchSchema(id)) { "无法恢复当前输入方案" }
+                withContext(Dispatchers.Main) {
+                    service.sessionController.updateSchemaName()
+                    service.updateUI()
+                }
+            } catch (e: Exception) {
+                FileLogger.e(XimeInputMethodService.TAG, "Failed to apply spelling patches", e)
             }
         }
     }
@@ -241,18 +267,21 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                     service, currentSchemaId
                 ) ?: currentSchemaId
 
+                val problem = RimeConfigHelper.deploymentProblem(service)
                 withContext(Dispatchers.Main) {
                     service.uiState.value = service.uiState.value.copy(
                         schemaName = schemaName,
                         currentSchemaId = currentSchemaId,
                     )
                     service.updateUI()
-                    android.widget.Toast.makeText(service, "方案部署完成", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(service, if (problem.isEmpty()) "方案部署完成"
+                        else "方案部署完成，有方案没编译成功，详情见「已安装的方案」", android.widget.Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
                 FileLogger.e(XimeInputMethodService.TAG, "Failed to reload config", e)
+                if (RimeConfigHelper.deploymentProblem(service).isEmpty()) RimeConfigHelper.recordFailure(service, e)
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(service, "方案部署失败，请在输入方案设置中重试", Toast.LENGTH_LONG).show()
+                    Toast.makeText(service, "方案部署失败，到「已安装的方案」点「应用方案更改」可看原因", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -270,6 +299,7 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
     }
     
     private val editorCursor = EditorCursor()
+    private val pendingCursorSteps = PendingCursorSteps()
     private val japaneseKanaComposer = JapaneseKanaComposer()
     private var japaneseKanaSession = Long.MIN_VALUE
 
@@ -348,7 +378,7 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
         internalConnection?.takeIf { it.first === editor }?.second
             ?: editor.onCreateInputConnection(android.view.inputmethod.EditorInfo())?.also { internalConnection = editor to it }
 
-    private fun editCursor(finishComposition: Boolean = true, preeditKey: String? = null, action: (InputConnection) -> Unit) {
+    private fun editCursor(finishComposition: Boolean = true, preeditKey: (() -> String?)? = null, action: (InputConnection) -> Unit) {
         val target = service.uiState.value.inputTarget
         if (target.isInternal) {
             val editor = target.editText() ?: return // Never fall back to the host when an internal editor owns input.
@@ -370,11 +400,11 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                 }
                 val composing = service.candidateState.value.let { it.isComposing || it.inputText.isNotEmpty() }
                 if (preeditKey != null && composing) {
-                    service.keyboardCallbacks?.onPreeditCursorMove?.invoke(preeditKey)
+                    preeditKey()?.let { service.keyboardCallbacks?.onPreeditCursorMove?.invoke(it) }
                     return@withContext
                 }
                 val preserveComposition = finishComposition &&
-                    SettingsPreferences.getInputTextLocation(service) == SettingsPreferences.INPUT_TEXT_INPUT_BOX &&
+                    TerminalEditor.inputTextLocation(service) == SettingsPreferences.INPUT_TEXT_INPUT_BOX &&
                     service.candidateState.value.isComposing
                 if (preserveComposition) {
                     service.finishComposingInputBoxKeepingText()
@@ -391,7 +421,12 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
      * 单行框只在文本内移动（审计 F11：以前自动折行的长段落一下跳到段首/段尾）。
      */
     internal fun moveEditorCursorVertical(steps: Int, selecting: Boolean = false) =
-        editCursor(preeditKey = "preedit_cursor:${if (steps < 0) "start" else "end"}") { connection ->
+        editCursor(preeditKey = { "preedit_cursor:${if (steps < 0) "start" else "end"}" }) { connection ->
+            if (service.isTerminalEditor()) {
+                // 终端里上下键就是翻命令历史，原样发出去。
+                TerminalEditor.sendKeys(connection, if (steps < 0) KeyEvent.KEYCODE_DPAD_UP else KeyEvent.KEYCODE_DPAD_DOWN, abs(steps))
+                return@editCursor
+            }
             val multiLine = editorIsMultiLine()
             repeat(abs(steps).coerceAtMost(1000)) {
                 if (!editorCursor.moveLine(connection, steps.sign, selecting, multiLine)) return@editCursor
@@ -410,12 +445,28 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
             internalEditor?.let(::internalConnectionFor) ?: return
         } else service.currentInputConnection ?: return
         if (internalEditor != null) editorCursor.observeSelection(ic, internalEditor.selectionStart, internalEditor.selectionEnd)
+        // 终端读不到文字，下面的文内移动永远原地不动；方向键连同 Shift/Ctrl 交给终端自己处理。
+        if (!target.isInternal && service.isTerminalEditor()) return TerminalEditor.forward(ic, event)
         editorCursor.movePhysical(ic, event.keyCode, event.isShiftPressed,
             byWord = event.isCtrlPressed, toBoundary = event.isAltPressed || event.isMetaPressed)
     }
 
-    internal fun moveEditorCursor(steps: Int, selecting: Boolean = false, onStep: () -> Unit = {}) =
-        editCursor(preeditKey = "preedit_cursor:$steps") { editorCursor.moveWithFeedback(it, steps, selecting, onStep) }
+    /**
+     * 拖动移光标（长按空格、键盘区滑动）的每一格。每格仍排一个队列任务，但轮到的任务把攒下的格子一次做完，
+     * 见 [PendingCursorSteps]：宿主回话慢时不再一格等一格（用户 10-31：长按空格滑动延迟很大）。
+     */
+    internal fun moveEditorCursor(steps: Int, selecting: Boolean = false, onStep: () -> Unit = {}) {
+        if (steps == 0) return
+        val session = service.uiState.value.inputSessionId
+        pendingCursorSteps.add(steps, selecting, session)
+        editCursor(preeditKey = { pendingCursorSteps.drainNet(session)?.let { "preedit_cursor:$it" } }) { ic ->
+            for (run in pendingCursorSteps.drain(session)) {
+                if (service.isTerminalEditor()) TerminalEditor.sendKeys(ic,
+                    if (run.steps < 0) KeyEvent.KEYCODE_DPAD_LEFT else KeyEvent.KEYCODE_DPAD_RIGHT, abs(run.steps), onStep)
+                else editorCursor.moveWithFeedback(ic, run.steps, run.selecting, onStep)
+            }
+        }
+    }
 
     /** 已在按键队列中，不能再次排队，否则长按方向键会积压到后续操作之后。 */
     internal suspend fun moveJapaneseCursorFromKeyQueue(steps: Int) {
@@ -432,6 +483,17 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
     // 以前全选/复制/剪切/粘贴/撤销直接作用于当前连接，排在前面的扩选还没执行就剪了旧选区）。
     internal fun handleToolbarEditingAction(action: String) {
         if (service.currentInputConnection == null) return
+        if (service.isTerminalEditor()) {
+            val key = TerminalEditor.keyForEditingAction(action)
+            when {
+                key != null -> editCursor { TerminalEditor.sendKeys(it, key) }
+                action == "paste" -> editCursor { service.pasteIntoTerminal() }
+                // 复制交给宿主：有自己选区的终端会处理，不处理也不出错。撤销（Ctrl+Z 会挂起前台程序）、
+                // 剪切、全选和选择模式在终端里没有意义，不发任何东西。
+                action == "copy" -> editCursor { it.performContextMenuAction(android.R.id.copy) }
+            }
+            return
+        }
         when (action) {
             "undo", "redo" -> editCursor { service.sendUndoShortcut(it, redo = action == "redo") }
             "select_all" -> editCursor { it.performContextMenuAction(android.R.id.selectAll) }
@@ -496,10 +558,7 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
         }
         if (!templateHandwriting && !com.kingzcheung.xime.handwriting.HandwritingEngine.hasModel(service, recognitionLanguage!!)) {
             Toast.makeText(service, "请先下载手写模型", Toast.LENGTH_SHORT).show()
-            service.startActivity(android.content.Intent(service, com.kingzcheung.xime.MainActivity::class.java).apply {
-                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                putExtra("open_fragment", "model_management")
-            })
+            service.startActivity(settingsActivityIntent(service, "model_management"))
             return
         }
         service.editorInputPolicy.choose(false)
@@ -539,13 +598,7 @@ internal class ImeSchemaController(private val service: XimeInputMethodService) 
                 android.widget.Toast.makeText(
                     service, "请先下载手写模型", android.widget.Toast.LENGTH_LONG
                 ).show()
-                val intent = android.content.Intent(
-                    service, com.kingzcheung.xime.MainActivity::class.java
-                ).apply {
-                    flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                    putExtra("open_fragment", "model_management")
-                }
-                service.startActivity(intent)
+                service.startActivity(settingsActivityIntent(service, "model_management"))
                 return
             }
             service.keyboardViewModel.discardTemporaryHandwriting()

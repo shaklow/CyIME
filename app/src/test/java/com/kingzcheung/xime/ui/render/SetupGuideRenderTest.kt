@@ -12,6 +12,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsNotSelected
+import androidx.compose.ui.test.assertIsOff
+import androidx.compose.ui.test.assertIsOn
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -27,10 +29,12 @@ import com.kingzcheung.xime.model.BuiltinModelCatalog
 import com.kingzcheung.xime.model.CandidateModelCatalog
 import com.kingzcheung.xime.model.DeviceModelProfiles
 import com.kingzcheung.xime.model.DeviceModelTier
+import com.kingzcheung.xime.model.DoublePinyinChoice
 import com.kingzcheung.xime.model.SetupAnswers
 import com.kingzcheung.xime.model.SetupFacts
 import com.kingzcheung.xime.model.SetupGuide
 import com.kingzcheung.xime.model.SetupGuidePlanner
+import com.kingzcheung.xime.model.SetupSource
 import com.kingzcheung.xime.model.VoiceUse
 import com.kingzcheung.xime.speech.SpeechModelCatalog
 import com.kingzcheung.xime.ui.settings.SetupGuideContent
@@ -65,10 +69,18 @@ class SetupGuideRenderTest {
             SpeechModelCatalog.XASR to 136 * mb, DeviceModelProfiles.BASE to 35 * mb, DeviceModelProfiles.SMALL to 19 * mb,
             BuiltinModelCatalog.SPEAKER_MODEL to 27 * mb, "ochwpro" to 7 * mb, CandidateModelCatalog.NGRAM to 203 * mb,
             CandidateModelCatalog.NGRAM_SMALL to 105 * mb)
-        return SetupFacts(DeviceModelTier.ENHANCED, memoryBytes = 8 * 1024 * mb, cores = 8, maxCpuKHz = 3_200_000,
+        return SetupFacts(DeviceModelTier.ENHANCED, performanceTier = com.kingzcheung.xime.runtime.adaptation.PerformanceTier.HIGH,
+            memoryBytes = 8 * 1024 * mb, cores = 8, maxCpuKHz = 3_200_000,
             soc = "Qualcomm SM8550", freeBytes = 45 * 1024 * mb, metered = true, language = "中文",
-            installed = bundled.associateWith { sizes.getValue(it) }, inPackage = bundled, sizes = sizes)
+            installed = bundled.associateWith { sizes.getValue(it) }, inPackage = bundled, sizes = sizes,
+            doublePinyinChoices = doublePinyins, shownDoublePinyin = doublePinyins.map { it.id }.toSet())
     }
+
+    private val doublePinyins = listOf("double_pinyin_flypy" to "小鹤双拼" to "ul'pb", "double_pinyin_shoudao" to "首道双拼" to "eh'pc",
+        "double_pinyin_ziranma" to "自然码" to "ud'pn", "double_pinyin_znabc" to "智能ABC双拼" to "vt'pm",
+        "double_pinyin_jiajia" to "拼音加加" to "ih'pl", "double_pinyin_microsoft" to "微软双拼" to "ud'pn")
+        .map { (idName, example) -> DoublePinyinChoice(idName.first, idName.second, example,
+            lettersOnly = idName.first == "double_pinyin_microsoft") }
 
     private fun shot(out: String, name: String) {
         val root = rule.activity.window.decorView
@@ -109,7 +121,51 @@ class SetupGuideRenderTest {
         rule.waitForIdle()
         rule.onNodeWithTag("setup-voice:SOMETIMES").assertIsSelected()
         rule.onNodeWithTag("setup-voice:OFTEN").assertIsNotSelected()
+        // 打字方式：新装是全拼 26 键；键盘三张卡和别的题一样大，问题在设备情况上面。
+        rule.onNodeWithTag("setup-typing:FULL_PINYIN").assertIsSelected()
+        rule.onNodeWithTag("setup-keyboard:QWERTY").assertIsSelected()
+        for (tag in listOf("setup-keyboard:QWERTY", "setup-keyboard:K14", "setup-keyboard:T9")) {
+            val bounds = rule.onNodeWithTag(tag).getBoundsInRoot()
+            assertTrue("$tag 只有 ${bounds.bottom - bounds.top} 高", bounds.bottom - bounds.top >= 76.dp)
+        }
+        rule.onNodeWithTag("setup-keyboard:K14").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("setup-keyboard:K14").assertIsSelected()
+        rule.onNodeWithTag("setup-keyboard:QWERTY").assertIsNotSelected()
+        // 选了九键就不再问“也用九键打字吗”。
+        rule.onNodeWithTag("setup-keyboard:T9").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("setup-t9:true").assertDoesNotExist()
+        rule.onNodeWithTag("setup-keyboard:QWERTY").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("setup-t9:true").assertExists()
+        // 分不清的读音可以多选，“都分得清”和它们互斥。
+        rule.onNodeWithTag("setup-fuzzy:none").assertIsSelected()
+        rule.onNodeWithTag("setup-fuzzy:NL").performScrollTo().performClick()
+        rule.onNodeWithTag("setup-fuzzy:NASAL").performScrollTo().performClick()
+        rule.waitForIdle()
+        // 多选卡按复选框报“已勾选”。
+        rule.onNodeWithTag("setup-fuzzy:NL").assertIsOn()
+        rule.onNodeWithTag("setup-fuzzy:NASAL").assertIsOn()
+        rule.onNodeWithTag("setup-fuzzy:FH").assertIsOff()
+        rule.onNodeWithTag("setup-fuzzy:none").assertIsNotSelected()
+        rule.onNodeWithTag("setup-hide-double-pinyin").assertExists()
         val out = System.getenv("CYIME_RENDER_OUT")
+        if (!out.isNullOrEmpty()) { File(out).mkdirs(); shot(out, "full-pinyin-fuzzy") }
+        // 选双拼：出“用哪一种”，模糊音那题收起。
+        rule.onNodeWithTag("setup-typing:DOUBLE_PINYIN").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("setup-double-pinyin:double_pinyin_flypy").assertIsSelected()
+        rule.onNodeWithTag("setup-fuzzy:NL").assertDoesNotExist()
+        rule.onNodeWithTag("setup-double-pinyin:double_pinyin_ziranma").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("setup-double-pinyin:double_pinyin_ziranma").assertIsSelected()
+        if (!out.isNullOrEmpty()) shot(out, "double-pinyin")
+        // 微软双拼只有 26 键：14 键、九键两张卡不出现，说明为什么。
+        rule.onNodeWithTag("setup-double-pinyin:double_pinyin_microsoft").performScrollTo().performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("setup-keyboard:QWERTY").assertIsSelected()
+        rule.onNodeWithTag("setup-keyboard:K14").assertDoesNotExist()
         if (out.isNullOrEmpty()) return
         File(out).mkdirs()
         // 出图：停住时钟再点回第一张，存一张颜色、打勾按 CyMotion.GUIDE 变到一半的，再存一张变完的。
@@ -137,12 +193,13 @@ class SetupGuideRenderTest {
                     Box(Modifier.width(420.dp).fillMaxHeight()) {
                         SetupGuideContent(facts, plan, plan.remove.map { it.id }.toSet(), allowMetered = false, applying = false,
                             result = null, firstRun = true, onAnswers = {}, onToggleRemove = { _, _ -> }, onAllowMetered = {},
-                            onApply = {}, onSkip = {}, onDone = {})
+                            onApply = {}, onSkip = {}, onDone = {}, onOpenPerformance = {})
                     }
                     Spacer(Modifier.width(40.dp))
                     Box(Modifier.width(420.dp).fillMaxHeight()) {
                         SetupGuideContent(facts, plan, emptySet(), allowMetered = false, applying = false,
-                            result = SetupGuide.Result(3, 249 * mb, 362 * mb, waitingForWifi = true, failed = emptyList()),
+                            result = SetupGuide.Result(3, 249 * mb, 362 * mb, waitingForWifi = true, failed = emptyList(),
+                                downloadingIds = plan.keep.filter { it.source == SetupSource.DOWNLOAD }.map { it.id }),
                             firstRun = true, onAnswers = {}, onToggleRemove = { _, _ -> }, onAllowMetered = {},
                             onApply = {}, onSkip = {}, onDone = {})
                     }

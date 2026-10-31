@@ -1,8 +1,10 @@
 package com.kingzcheung.xime.ui.settings
 
+import android.content.ActivityNotFoundException
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.view.inputmethod.InputMethodManager
@@ -19,6 +21,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.kingzcheung.xime.rime.RimeConfigHelper
 import com.kingzcheung.xime.rime.RimeEngine
 import com.kingzcheung.xime.settings.ChineseSchemas
+import com.kingzcheung.xime.settings.DoublePinyinScheme
 import com.kingzcheung.xime.settings.SchemaManager
 import com.kingzcheung.xime.settings.SettingsPreferences
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +39,28 @@ internal data class SetupStatus(
     val complete: Boolean get() = imeEnabled && imeSelected && ready
 }
 
+/**
+ * vivo（OriginOS / Funtouch，含 iQOO）上 [InputMethodManager.showInputMethodPicker] 弹出的
+ * 「选择输入法」框可能一个输入法都不列，只剩「取消」（OriginOS 6 用户反馈，CyIME 已启用）。
+ * 这类系统上第 3 步改为先去系统输入法设置里选默认输入法，返回 null 表示系统选择框可用、保持原样。
+ */
+internal fun imePickerFallbackHint(manufacturer: String, brand: String): String? {
+    val vivo = listOf(manufacturer, brand).any { it.equals("vivo", true) || it.equals("iqoo", true) }
+    return if (vivo) "vivo / iQOO（OriginOS）的输入法选择框可能是空的。请点下面按钮打开系统输入法设置，" +
+        "在「默认输入法」（或「当前输入法」）里选 CyIME；如果打开的页面里没有，就进" +
+        "「设置 → 系统管理（或更多设置）→ 语言与输入法 → 默认输入法」，也可以在设置顶部搜索「默认输入法」。"
+    else null
+}
+
+/** 打开系统输入法设置；个别系统没有这个页面时退回设置首页。 */
+private fun openImeSettings(context: Context) {
+    try { context.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+    } catch (e: ActivityNotFoundException) {
+        Log.w("SetupWizard", "No input method settings page", e)
+        context.startActivity(Intent(Settings.ACTION_SETTINGS))
+    }
+}
+
 @Composable
 fun SetupWizardScreen(
     visible: Boolean = true,
@@ -46,6 +71,7 @@ fun SetupWizardScreen(
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     var status by remember { mutableStateOf(SetupStatus()) }
     var attempt by remember { mutableIntStateOf(0) }
+    val pickerFallbackHint = remember { imePickerFallbackHint(Build.MANUFACTURER.orEmpty(), Build.BRAND.orEmpty()) }
 
     fun refreshImeState() {
         val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
@@ -68,7 +94,12 @@ fun SetupWizardScreen(
         try {
             val schemas = withContext(Dispatchers.IO) {
                 RimeConfigHelper.prepareAutomatically(context)
-                SchemaManager.getEnabledSchemas(context).map { ChineseSchemas.displayName(it, it) }
+                // 用方案文件里的名字（小鹤双拼等），和「语言与方案」页一致；读不到才退回内置名或 ID。
+                val names = SchemaManager.discoverSchemas(context).associate { it.schemaId to it.name }
+                // 双拼的 14 键版本是组合配置（双拼 × 14 键），不单独列一项。
+                SchemaManager.getEnabledSchemas(context).filterNot(com.kingzcheung.xime.settings.CyimeInputDefaults::isCompanion).map { id ->
+                    names[id] ?: DoublePinyinScheme.BUILTINS.firstOrNull { it.id == id }?.name ?: ChineseSchemas.displayName(id, id)
+                }
             }
             status = status.copy(preparing = false, schemas = schemas,
                 error = if (schemas.isEmpty()) "请至少启用一个输入方案" else null)
@@ -80,10 +111,15 @@ fun SetupWizardScreen(
     }
     if (visible) SetupWizardContent(
         status = status,
-        onEnable = { context.startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS)) },
+        onEnable = { openImeSettings(context) },
         onSchemas = onNavigateToSchemaSettings,
         onRetry = { attempt++ },
-        onSwitch = { (context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager)?.showInputMethodPicker() },
+        onSwitch = {
+            val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            if (imm != null) imm.showInputMethodPicker() else openImeSettings(context)
+        },
+        pickerFallbackHint = pickerFallbackHint,
+        onOpenImeSettings = { openImeSettings(context) },
         onFinish = {
             refreshImeState()
             if (status.complete) {
@@ -108,6 +144,8 @@ internal fun SetupWizardContent(
     onRetry: () -> Unit,
     onSwitch: () -> Unit,
     onFinish: () -> Unit,
+    pickerFallbackHint: String? = null,
+    onOpenImeSettings: () -> Unit = {},
 ) {
     Scaffold(topBar = { TopAppBar(title = { Text("设置向导") }) }) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).settingsVerticalScroll()
@@ -134,13 +172,23 @@ internal fun SetupWizardContent(
                     }
                     else -> Text(status.schemas.joinToString(" · "))
                 }
+                // 老人包不出下一页（按设备推荐配置）。
+                if (!com.kingzcheung.xime.BuildConfig.ELDER) Text("用全拼、双拼还是五笔，26 键、14 键还是九键，完成后下一页会问你。",
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 TextButton(onClick = onSchemas, enabled = !status.preparing) { Text("选择其他方案（可选）") }
             }
             SetupCard(3, "切换到 CyIME", status.imeEnabled && status.imeSelected,
                 if (status.imeEnabled && status.imeSelected) "已切换" else "待切换") {
                 if (!status.imeEnabled || !status.imeSelected) {
-                    Text("启用并准备完成后，在输入法选择器中选中 CyIME。")
-                    Button(onClick = onSwitch, enabled = status.imeEnabled && status.ready) { Text("选择 CyIME") }
+                    val canSwitch = status.imeEnabled && status.ready
+                    if (pickerFallbackHint == null) {
+                        Text("启用并准备完成后，在输入法选择器中选中 CyIME。")
+                        Button(onClick = onSwitch, enabled = canSwitch) { Text("选择 CyIME") }
+                    } else {
+                        Text(pickerFallbackHint)
+                        Button(onClick = onOpenImeSettings, enabled = canSwitch) { Text("去系统设置选择 CyIME") }
+                        TextButton(onClick = onSwitch, enabled = canSwitch) { Text("仍用输入法选择框") }
+                    }
                 }
             }
             if (status.complete) {

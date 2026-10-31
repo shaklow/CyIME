@@ -279,6 +279,10 @@ fun KeyboardView(
     val opacityEditingState = remember(resizeActive) { mutableStateOf(false) }
     val resizeControlDensity = LocalDensity.current
     val inputPreferences = rememberKeyboardInputPreferences(state.isDarkTheme)
+    // 「ing 放在 Shift 键上」决定 26 键第二排补不补分号键；只由输入法自己的键盘交给 KeysConfigHelper（设置页的预览不改它）。
+    LaunchedEffect(inputPreferences.doublePinyinSemicolonOnShift) {
+        com.kingzcheung.xime.settings.KeysConfigHelper.setSemicolonOnShift(inputPreferences.doublePinyinSemicolonOnShift)
+    }
     // 分体中缝：服务提供同一份测量，触摸区与玻璃模糊也据此避开中缝。
     val splitKeyboardGap = LocalSplitKeyboardGap.current ?: remember { SplitKeyboardGap() }
     val splitGapPreview = remember(resizeActive) { mutableStateOf<Float?>(null) }
@@ -400,6 +404,8 @@ fun KeyboardView(
         val resizeRotation = remember(sessionKey) { mutableFloatStateOf(if (state.isFloatingMode) state.floatingRotation else 0f) }
         val renderedBottomPaddingDp = if (resizeActive && !state.isFloatingMode)
             previewPaddingDp.intValue else state.keyboardBottomPaddingDp
+        // 调节键盘时底部留白在被拖动改高度，不当移光标区。
+        val bottomLiftCursorOn = inputPreferences.bottomLiftCursor && !resizeActive && !state.isFloatingMode
 
     FloatingKeyboardContainer(
         isFloatingMode = state.isFloatingMode,
@@ -445,6 +451,7 @@ fun KeyboardView(
             supportsSplitKeyboard(state.currentSchemaId, state.isAsciiMode),
         onCornerTap = callbacks.onKeyboardResize,
         onCornerHandlesPositioned = onCornerHandlesPositioned,
+        sidesFilled = inputPreferences.fillBlankAreas && !state.handwritingExpanded,
     ) {
         // 候选栏随键盘半速放大：按卡片实际尺寸算，调节尺寸时跟着预览走；剪贴板上拉和搜索时卡片临时变高，不跟。
         val barScaleFrozen = LocalClipboardPanelExpansion.current != null || state.clipboardSearchVisible
@@ -563,10 +570,13 @@ fun KeyboardView(
         // 工具栏与菜单共用一组入口：动作、开/关状态和按键反馈相同，放在哪一处都一样。
         val quickContext = LocalContext.current
         val quickToggles = rememberQuickToggleStates()
+        // 开无痕前先确认：菜单里一碰就开，之后复制的内容不再进剪贴板，用户不知道为什么。关掉不用确认。
+        var incognitoConfirm by remember(state.inputSessionId) { mutableStateOf(false) }
+        // 仓颉也跟着「繁体输出」出简繁（ImeKeyRouter 设 simplification），按钮同样要在。
         val traditionalSwitchApplies = !state.isAsciiMode && !state.isHandwritingMode &&
             state.inputProfile.language == com.kingzcheung.xime.settings.InputLanguage.CHINESE &&
             state.inputProfile.scheme in setOf(com.kingzcheung.xime.settings.InputScheme.PINYIN,
-                com.kingzcheung.xime.settings.InputScheme.DOUBLE_PINYIN)
+                com.kingzcheung.xime.settings.InputScheme.DOUBLE_PINYIN, com.kingzcheung.xime.settings.InputScheme.CANGJIE)
         fun quickAction(id: String): ToolbarAction? {
             val item = resolveToolbarButtonItem(id, state.toolbarPluginButtons) ?: return null
             val widthSwitch = if (state.isAsciiMode) null else state.schemaSwitches.firstOrNull { it.name == "full_shape" }
@@ -580,11 +590,6 @@ fun KeyboardView(
                     })
                     ToolbarButton.SCHEMA -> ({ viewModel.toggleOverlay(OverlayRoute.SchemaList) })
                     ToolbarButton.SYMBOL -> ({ viewModel.toggleOverlay(OverlayRoute.Symbol) })
-                    ToolbarButton.SELECT_ALL -> ({ callbacks.onToolbarEditingAction?.invoke("select_all") })
-                    ToolbarButton.COPY -> ({ callbacks.onToolbarEditingAction?.invoke("copy") })
-                    ToolbarButton.PASTE -> ({ callbacks.onToolbarEditingAction?.invoke("paste") })
-                    ToolbarButton.HOME -> ({ callbacks.onToolbarEditingAction?.invoke("home") })
-                    ToolbarButton.END -> ({ callbacks.onToolbarEditingAction?.invoke("end") })
                     ToolbarButton.FLOAT -> ({ viewModel.closeOverlay(); callbacks.onKeyboardResize?.invoke() })
                     ToolbarButton.HANDWRITING_LOOKUP -> ({
                         if (!state.isHandwritingMode && !viewModel.hasTemporaryHandwriting) {
@@ -602,10 +607,9 @@ fun KeyboardView(
                     ToolbarButton.GLIDE, ToolbarButton.T9_FLICK, ToolbarButton.FOURTEEN_SWIPE,
                     ToolbarButton.KANA_HINTS, ToolbarButton.FLICK_DISC ->
                         if (item.button.appliesTo(state.inputProfile.layout.kind) &&
-                            // 滑行只在英文 26 键和中文全拼、双拼字母键盘上、且没被「键盘滑动」占用时生效，否则不显示这个开关。
+                            // 这个开关是英文滑行：只在英文 26 键、且没被「键盘滑动」占用时显示（中文滑行在设置里单独开）。
                             (item.button != ToolbarButton.GLIDE ||
-                                (com.kingzcheung.xime.glide.glideSupported(state.isAsciiMode, state.inputProfile, state.currentSchemaId) &&
-                                    inputPreferences.cursorGesture != CursorGestureMode.KEYBOARD)))
+                                (state.isAsciiMode && inputPreferences.cursorGesture != CursorGestureMode.KEYBOARD)))
                             ({ item.button.flipGesture(quickContext, inputPreferences) }) else return null
                     ToolbarButton.SOUND -> ({
                         val on = !(quickToggles.sound || quickToggles.vibration)
@@ -620,10 +624,13 @@ fun KeyboardView(
                         val glass = com.kingzcheung.xime.settings.FrostedGlassPreferences.read(quickContext)
                         com.kingzcheung.xime.settings.FrostedGlassPreferences.save(quickContext, glass.copy(enabled = !glass.enabled))
                     })
-                    ToolbarButton.INCOGNITO -> ({ SettingsPreferences.setIncognito(quickContext, !quickToggles.incognito) })
+                    ToolbarButton.INCOGNITO -> ({
+                        if (quickToggles.incognito) SettingsPreferences.setIncognito(quickContext, false)
+                        else incognitoConfirm = true
+                    })
                     // 英文状态标点固定半角，入口不出现，避免“点了看不到变化，实际却改了状态”。
                     ToolbarButton.FULL_SHAPE -> widthSwitch?.let { sw -> { callbacks.onToggleSchemaSwitch?.invoke(sw) } } ?: return null
-                    // 繁体输出只对拼音、双拼生效（注音本来就出正体），其余状态不出现；下一个按键起按新设置出字。
+                    // 繁体输出只对拼音、双拼、仓颉生效（注音本来就出正体），其余状态不出现；下一个按键起按新设置出字。
                     ToolbarButton.TRADITIONAL -> if (traditionalSwitchApplies) ({
                         inputPreferences.copy(traditionalOutput = !inputPreferences.traditionalOutput).save(quickContext)
                     }) else return null
@@ -686,17 +693,14 @@ fun KeyboardView(
                 .hiddenDuringCursorControl(cursorControlActive)
         ) {
             var handwritingCandidates by remember(state.inputSessionId, state.inputProfile.language) { mutableStateOf<List<String>>(emptyList()) }
-            var handwritingComments by remember(state.inputSessionId, state.inputProfile.language) { mutableStateOf<List<String>>(emptyList()) }
             var handwritingClearSignal by remember(state.inputSessionId, state.inputProfile.language) { mutableIntStateOf(0) }
             val handwritingPending = remember(state.inputSessionId, state.inputProfile.language) { HandwritingCandidateQueue() }
             fun refreshHandwritingCandidates() {
                 handwritingCandidates = handwritingPending.candidates
-                handwritingComments = emptyList()
             }
             fun clearHandwriting() {
                 handwritingPending.clear()
                 handwritingCandidates = emptyList()
-                handwritingComments = emptyList()
                 handwritingClearSignal++
             }
             val handwritingContext = LocalContext.current
@@ -731,6 +735,15 @@ fun KeyboardView(
                 clearHandwriting()
             }
             val showHandwritingCandidates = isHandwritingPage && handwritingCandidates.isNotEmpty()
+            // 中文手写候选的注释是读音（带声调），忘了读音的字写出来对一下；释义模式下也显示读音。
+            val handwritingChinese = isHandwritingPage && state.inputProfile.language == InputLanguage.CHINESE
+            LaunchedEffect(handwritingChinese) {
+                if (handwritingChinese) com.kingzcheung.xime.handwriting.HanziPinyin.load(handwritingContext)
+            }
+            val hanziPinyinRevision = com.kingzcheung.xime.handwriting.HanziPinyin.revision
+            val handwritingComments = remember(handwritingCandidates, handwritingChinese, hanziPinyinRevision) {
+                if (handwritingChinese) com.kingzcheung.xime.handwriting.HanziPinyin.comments(handwritingCandidates) else emptyList()
+            }
 
             if (state.showQuickSendForm && state.ocrDraft) {
                 val ocrContext = LocalContext.current
@@ -746,6 +759,7 @@ fun KeyboardView(
                     onRetake = { callbacks.onHideQuickSendForm?.invoke(); viewModel.showOverlay(OverlayRoute.Ocr) },
                 )
             } else if (state.showQuickSendForm) {
+                val clipboardGroups = com.kingzcheung.xime.clipboard.ClipboardGroupStore.getInstance(LocalContext.current)
                 QuickSendFormArea(
                     backgroundColor = Color.Transparent,
                     textColor = keyTextColor,
@@ -759,7 +773,8 @@ fun KeyboardView(
                         android.util.Log.d("QuickSendForm", "onClose: textLen=${text.length}, editingId=${state.quickSendEditingItemId}, showForm=${state.showQuickSendForm}")
                         val result = submitClipboardDraft(
                             text, code, state.quickSendEditingItemId,
-                            add = viewModel::addPinnedText,
+                            // Added from a group's tab: the new fixed record goes into that group.
+                            add = { newText, newCode -> viewModel.addPinnedText(newText, newCode, clipboardGroups.takeAddTarget()) },
                             update = viewModel::updateClipboardItem,
                         )
                         if (result == ClipboardDraftSaveResult.ACCEPTED) {
@@ -771,7 +786,7 @@ fun KeyboardView(
                             }
                         }
                     },
-                    onCancel = { callbacks.onHideQuickSendForm?.invoke() },
+                    onCancel = { clipboardGroups.takeAddTarget(); callbacks.onHideQuickSendForm?.invoke() },
                     onFocusChange = { focused: Boolean ->
                         callbacks.onQuickSendFormFocusChange?.invoke(focused)
                     },
@@ -1466,9 +1481,7 @@ fun KeyboardView(
                                 modifier = Modifier.weight(1f).then(cursorMod),
                                 t9Controller = t9Controller,
                             )
-                            if (renderedBottomPaddingDp > 0) {
-                                Spacer(modifier = Modifier.height(renderedBottomPaddingDp.dp))
-                            }
+                            BottomLiftSpacer(renderedBottomPaddingDp, bottomLiftCursorOn, callbacks.onCursorMove)
                         }
                     }
 
@@ -1531,9 +1544,7 @@ fun KeyboardView(
                             specialKeyTextColor = specialKeyTextColor,
                             modifier = Modifier.weight(1f),
                         )
-                        if (renderedBottomPaddingDp > 0) {
-                            Spacer(modifier = Modifier.height(renderedBottomPaddingDp.dp))
-                        }
+                        BottomLiftSpacer(renderedBottomPaddingDp, bottomLiftCursorOn, callbacks.onCursorMove)
                     }
 
                     MainType.STROKE -> {
@@ -1594,6 +1605,7 @@ fun KeyboardView(
                         keySpacingX = numberSpacing.first?.dp,
                         keySpacingY = numberSpacing.second?.dp,
                         isJapaneseKana = japaneseNumberPage,
+                        enterKeyText = state.enterKeyText,
                         onKeyPressDown = callbacks.onKeyPressDown,
                         isFloatingMode = state.isFloatingMode,
                         specialKeyTextColor = specialKeyTextColor,
@@ -1619,6 +1631,7 @@ fun KeyboardView(
                             }
                         },
                         isAsciiMode = state.isAsciiMode,
+                        enterKeyText = state.enterKeyText,
                         initialAsciiMode = viewModel.asciiStateMachine.targetFor(
                             AsciiKeyboardContext.SYMBOL_PANEL, state.isAsciiMode
                         ) ?: state.isAsciiMode,
@@ -1640,9 +1653,7 @@ fun KeyboardView(
                     )
 
                 }
-                if (renderedBottomPaddingDp > 0) {
-                    Spacer(Modifier.height(renderedBottomPaddingDp.dp))
-                }
+                BottomLiftSpacer(renderedBottomPaddingDp, bottomLiftCursorOn, callbacks.onCursorMove)
             }
             } // Full candidate panel reveals over the complete keyboard body.
             KeyboardPanelReveal(
@@ -1975,6 +1986,22 @@ fun KeyboardView(
                 else -> {}
             }
         }
+        // 画在面板之后：从菜单或打开着的面板上点「无痕」时，确认卡也在最上面。
+        if (incognitoConfirm) {
+            KeyboardConfirmCard(
+                title = "开启无痕模式？",
+                message = "开启后打字不学新词、不调选词顺序，新复制的内容不会记进剪贴板；已有的剪贴板记录照常能用。再点一次「无痕」就关闭。",
+                confirmLabel = "开启",
+                destructive = false,
+                tag = "incognito-confirm",
+                modifier = Modifier.matchParentSize(),
+                onCancel = { onHapticFeedback?.invoke(); incognitoConfirm = false },
+                onConfirm = {
+                    onHapticFeedback?.invoke()
+                    incognitoConfirm = false
+                    SettingsPreferences.setIncognito(quickContext, true)
+                })
+        }
     }
     } // FloatingKeyboardContainer: resize overlay must stay outside the floating card.
     resizeOverlay?.let { controls ->
@@ -2003,7 +2030,8 @@ fun KeyboardView(
             bottomKeyClearance = floatingBottomClearance,
             density = resizeControlDensity,
             aspectLimits = KeyboardAspectLimits.forLayout(state.inputProfile.layout.kind, splitActive, splitGapFraction),
-            squareSnap = KeyboardSquareSnap.forLayout(state.inputProfile.layout.kind, splitActive, splitGapFraction),
+            squareSnap = KeyboardSquareSnap.forLayout(state.inputProfile.layout.kind, splitActive, splitGapFraction,
+                inputPreferences.wideKeys),
             splitGapFraction = splitGapSetting,
             splitPitchDp = splitPitchDp,
             onSplitGapChange = { splitGapPreview.value = it },
@@ -2066,10 +2094,26 @@ private fun KeyboardResizeControlsHost(
     }
 }
 
-/** 忘掉学习记录的确认卡。和剪贴板删除确认同一套卡片颜色：按键色卡片、主题字色，不用 Material 底（深色 iOS 上曾是白卡）。 */
+/** 忘掉学习记录的确认卡。 */
 @Composable
 internal fun ForgetLearningConfirm(word: String, message: String?, modifier: Modifier,
     onCancel: () -> Unit, onConfirm: () -> Unit) {
+    KeyboardConfirmCard(
+        title = "忘掉学习",
+        message = message ?: "忘掉「$word」的学习记录？词库里本来有的词会回到原来的位置，自己打出来的新词会消失。",
+        confirmLabel = "忘掉",
+        destructive = true,
+        tag = "forget-learning-confirm",
+        modifier = modifier, onCancel = onCancel, onConfirm = onConfirm)
+}
+
+/**
+ * 键盘内的确认卡（忘掉学习、开启无痕）。和剪贴板删除确认同一套卡片颜色：按键色卡片、主题字色，
+ * 不用 Material 底（深色 iOS 上曾是白卡）。点卡片外面等于取消。
+ */
+@Composable
+internal fun KeyboardConfirmCard(title: String, message: String, confirmLabel: String, destructive: Boolean,
+    tag: String, modifier: Modifier, onCancel: () -> Unit, onConfirm: () -> Unit) {
     val cardColors = keyboardCardColors()
     Box(
         modifier = modifier
@@ -2079,7 +2123,7 @@ internal fun ForgetLearningConfirm(word: String, message: String?, modifier: Mod
                 indication = null,
                 onClick = onCancel
             )
-            .testTag("forget-learning-confirm"),
+            .testTag(tag),
         contentAlignment = Alignment.Center
     ) {
         Card(
@@ -2089,13 +2133,13 @@ internal fun ForgetLearningConfirm(word: String, message: String?, modifier: Mod
         ) {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 18.dp)) {
                 Text(
-                    text = "忘掉学习",
+                    text = title,
                     style = MaterialTheme.typography.titleMedium,
                     color = cardColors.text
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = message ?: "忘掉「$word」的学习记录？词库里本来有的词会回到原来的位置，自己打出来的新词会消失。",
+                    text = message,
                     style = MaterialTheme.typography.bodyMedium,
                     color = cardColors.text.copy(alpha = .7f)
                 )
@@ -2109,7 +2153,7 @@ internal fun ForgetLearningConfirm(word: String, message: String?, modifier: Mod
                     }
                     Spacer(Modifier.width(4.dp))
                     TextButton(onClick = onConfirm) {
-                        Text("忘掉", color = MaterialTheme.colorScheme.error)
+                        Text(confirmLabel, color = if (destructive) MaterialTheme.colorScheme.error else cardColors.text)
                     }
                 }
             }

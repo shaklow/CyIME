@@ -54,6 +54,7 @@ import com.kingzcheung.xime.handwriting.rememberSPenInk
 import com.kingzcheung.xime.model.ModelDownloadState
 import com.kingzcheung.xime.model.ModelManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -167,6 +168,7 @@ fun HandwritingKeyboardLayout(
     // here showed as a dark band around the bottom row on gradient themes.
     val functionRowBackground = Color.Transparent
     val pauseMs by rememberUpdatedState((LocalKeyboardInputPreferences.current.handwritingPauseSeconds * 1000).toLong())
+    val recognizeWhileWriting by rememberUpdatedState(LocalKeyboardInputPreferences.current.handwritingRecognizeWhileWriting)
     val recognitionMutex = remember { Mutex() }
     val stylusPresence = remember { StylusPresence() }
     val eraserRadiusPx = with(LocalDensity.current) { com.kingzcheung.xime.handwriting.PenEraser.Radius.toPx() }
@@ -232,6 +234,8 @@ fun HandwritingKeyboardLayout(
                         OverlappedHandwritingRecognizer(maxSegments = SIDE_BY_SIDE_MAX_CHARS, maxStrokesPerSegment = 4, sideBySide = true, lettersApart = true)
                         else OverlappedHandwritingRecognizer(maxSegments = SIDE_BY_SIDE_MAX_CHARS, sideBySide = true)
                     val segments = recognizer.recognize(points, gaps, predictFn = { seg, k ->
+                        // 接着落笔、删除或切走时这次识别已作废：下一段推理前就停，不再占着锁让下一个字排队
+                        ensureActive()
                         // 模板分数 (cos+1)/2 换回余弦，乱切的段明显更低，切分才分得开
                         HandwritingTemplates.recognize(context, script, seg, k, remember = false)
                             .map { (text, score) -> HandwritingCandidate(text, (2f * score - 1f).coerceAtLeast(0.0001f)) }
@@ -265,14 +269,18 @@ fun HandwritingKeyboardLayout(
                                 lettersApart = recognitionLanguage == InputLanguage.ENGLISH,
                                 letterCost = OverlappedHandwritingRecognizer.MODEL_LETTER_COST)).recognize(
                             points, gaps,
-                            predictFn = { seg, topK -> HandwritingEngine.predict(seg, topK, recognitionLanguage) },
+                            // 作废的识别在下一段推理前就停（见上），不会跑完整个切分再放锁
+                            predictFn = { seg, topK -> ensureActive(); HandwritingEngine.predict(seg, topK, recognitionLanguage) },
                         ).segments, startsWord)
                     }
                 }
             }
         }, onNewCharacter = { newCharacter?.invoke() },
             // 按键（空格、回车、标点…）在本段笔迹认完之后才执行：从这里起下一段不再补空格
-            onRecognition = { result?.invoke(it) }, onKey = { wordSpacing.reset(); keyAction(it) }, keepInk = { formulaActive })
+            onRecognition = { result?.invoke(it) }, onKey = { wordSpacing.reset(); keyAction(it) }, keepInk = { formulaActive },
+            // 边写边识别只给中文、日语：英文要按停顿分词（有状态），公式整段重认，都不能提前认
+            recognizeEarly = { recognizeWhileWriting && !formulaActive &&
+                (recognitionLanguage == InputLanguage.CHINESE || recognitionLanguage == InputLanguage.JAPANESE) })
     }
     val modelDownloaded by remember {
         ModelManager.downloadStates.map { it["ochwpro"] is ModelDownloadState.Complete }.distinctUntilChanged()
@@ -331,10 +339,7 @@ fun HandwritingKeyboardLayout(
             if (formulaShown) Surface(
                 onClick = {
                     if (!formulaAvailable) {
-                        context.startActivity(android.content.Intent(context, com.kingzcheung.xime.MainActivity::class.java).apply {
-                            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
-                            putExtra("open_fragment", "model_management")
-                        })
+                        context.startActivity(com.kingzcheung.xime.service.settingsActivityIntent(context, "model_management"))
                         return@Surface
                     }
                     session.clear()

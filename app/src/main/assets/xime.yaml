@@ -376,6 +376,46 @@ keyboard:
       "'": { tap: { label: "，", value: "，" }, swipe_up: { label: "。", value: "。" } , long_press: { display: "bubble", values: [ "，", "。"] }}
       earth: { tap: { label: "@language", action: "toggle_ascii" }, long_press: { display: "bubble", values: [ { label: "选择输入法", action: "command", value: "show_ime_picker" } ] } }
 
+  # 仓颉五代（对应方案 cyime_cangjie，默认不启用）：同 26 键排列，键帽是仓颉字根，点按送字母码。
+  # 字根同方案 preedit_format 的 xlit（z 在五仓里是符号码，键帽「符」）。上下角标同 26 键（QwertySwipeSymbols），这里不配。
+  qwerty_cangjie:
+    schemas: [cyime_cangjie, cyime_quick]
+    button_layout: standard
+    layout:
+      rows:
+        - [q, w, e, r, t, y, u, i, o, p]
+        - [a, s, d, f, g, h, j, k, l]
+        - [z, x, c, v, b, n, m]
+    keys:
+      q: { tap: { label: "手", value: "q" }, long_press: { display: "bubble", values: ["q", "Q"] } }
+      w: { tap: { label: "田", value: "w" }, long_press: { display: "bubble", values: ["w", "W"] } }
+      e: { tap: { label: "水", value: "e" }, long_press: { display: "bubble", values: ["e", "E"] } }
+      r: { tap: { label: "口", value: "r" }, long_press: { display: "bubble", values: ["r", "R"] } }
+      t: { tap: { label: "廿", value: "t" }, long_press: { display: "bubble", values: ["t", "T"] } }
+      y: { tap: { label: "卜", value: "y" }, long_press: { display: "bubble", values: ["y", "Y"] } }
+      u: { tap: { label: "山", value: "u" }, long_press: { display: "bubble", values: ["u", "U"] } }
+      i: { tap: { label: "戈", value: "i" }, long_press: { display: "bubble", values: ["i", "I"] } }
+      o: { tap: { label: "人", value: "o" }, long_press: { display: "bubble", values: ["o", "O"] } }
+      p: { tap: { label: "心", value: "p" }, long_press: { display: "bubble", values: ["p", "P"] } }
+      a: { tap: { label: "日", value: "a" }, long_press: { display: "bubble", values: ["a", "A"] } }
+      s: { tap: { label: "尸", value: "s" }, long_press: { display: "bubble", values: ["s", "S"] } }
+      d: { tap: { label: "木", value: "d" }, long_press: { display: "bubble", values: ["d", "D"] } }
+      f: { tap: { label: "火", value: "f" }, long_press: { display: "bubble", values: ["f", "F"] } }
+      g: { tap: { label: "土", value: "g" }, long_press: { display: "bubble", values: ["g", "G"] } }
+      h: { tap: { label: "竹", value: "h" }, long_press: { display: "bubble", values: ["h", "H"] } }
+      j: { tap: { label: "十", value: "j" }, long_press: { display: "bubble", values: ["j", "J"] } }
+      k: { tap: { label: "大", value: "k" }, long_press: { display: "bubble", values: ["k", "K"] } }
+      l: { tap: { label: "中", value: "l" }, long_press: { display: "bubble", values: ["l", "L"] } }
+      z: { tap: { label: "符", value: "z" }, long_press: { display: "bubble", values: ["z", "Z"] } }
+      x: { tap: { label: "難", value: "x" }, long_press: { display: "bubble", values: ["x", "X"] } }
+      c: { tap: { label: "金", value: "c" }, long_press: { display: "bubble", values: ["c", "C"] } }
+      v: { tap: { label: "女", value: "v" }, long_press: { display: "bubble", values: ["v", "V"] } }
+      b: { tap: { label: "月", value: "b" }, long_press: { display: "bubble", values: ["b", "B"] } }
+      n: { tap: { label: "弓", value: "n" }, long_press: { display: "bubble", values: ["n", "N"] } }
+      m: { tap: { label: "一", value: "m" }, long_press: { display: "bubble", values: ["m", "M"] } }
+      "'": { tap: { label: "，", value: "," }, swipe_up: { label: "。", value: "." } , long_press: { display: "bubble", values: [ ",","."] }}
+      earth: { tap: { label: "@language", action: "toggle_ascii" }, long_press: { display: "bubble", values: [ { label: "选择输入法", action: "command", value: "show_ime_picker" } ] } }
+
   # 日语：26 键用成熟 jaroomaji 罗马音转换，九宫格将假名读音交给同一引擎。
   japanese_kana:
     schemas: [japanese_kana]
@@ -417,6 +457,48 @@ keyboard:
       "'": { tap: { label: "、", value: "," }, swipe_up: { label: "。", value: "." } }
       earth: { tap: { label: "@language", action: "toggle_ascii" } }
 
+  # 西班牙语：字母逐字上屏，补全不用打重音；第二排末尾是 ñ。长按元音出重音字母、长按 n 出 ñ
+  # （不受「长按弹出字母气泡」开关影响）。字母键的上下角标和英文键盘同一规则（QwertySwipeSymbols），这里不配；
+  # ¿ ¡ 在逗号键长按里。
+  qwerty_spanish:
+    schemas: [spanish]
+    button_layout: standard
+    layout:
+      rows:
+        - [q, w, e, r, t, y, u, i, o, p]
+        - [a, s, d, f, g, h, j, k, l, "ñ"]
+        - [z, x, c, v, b, n, m]
+    keys:
+      q: { tap: { label: "q", value: "q" } }
+      w: { tap: { label: "w", value: "w" } }
+      e: { tap: { label: "e", value: "e" }, long_press: { display: "bubble", values: ["é"] } }
+      r: { tap: { label: "r", value: "r" } }
+      t: { tap: { label: "t", value: "t" } }
+      y: { tap: { label: "y", value: "y" } }
+      u: { tap: { label: "u", value: "u" }, long_press: { display: "bubble", values: ["ú", "ü"] } }
+      i: { tap: { label: "i", value: "i" }, long_press: { display: "bubble", values: ["í"] } }
+      o: { tap: { label: "o", value: "o" }, long_press: { display: "bubble", values: ["ó"] } }
+      p: { tap: { label: "p", value: "p" } }
+      a: { tap: { label: "a", value: "a" }, long_press: { display: "bubble", values: ["á"] } }
+      s: { tap: { label: "s", value: "s" } }
+      d: { tap: { label: "d", value: "d" } }
+      f: { tap: { label: "f", value: "f" } }
+      g: { tap: { label: "g", value: "g" } }
+      h: { tap: { label: "h", value: "h" } }
+      j: { tap: { label: "j", value: "j" } }
+      k: { tap: { label: "k", value: "k" } }
+      l: { tap: { label: "l", value: "l" } }
+      "ñ": { tap: { label: "ñ", value: "ñ" } }
+      z: { tap: { label: "z", value: "z" } }
+      x: { tap: { label: "x", value: "x" } }
+      c: { tap: { label: "c", value: "c" } }
+      v: { tap: { label: "v", value: "v" } }
+      b: { tap: { label: "b", value: "b" } }
+      n: { tap: { label: "n", value: "n" }, long_press: { display: "bubble", values: ["ñ"] } }
+      m: { tap: { label: "m", value: "m" } }
+      "'": { tap: { label: ",", value: "," }, swipe_up: { label: ".", value: "." }, long_press: { display: "bubble", values: [",", ".", "¿", "¡", "?", "!"] } }
+      earth: { tap: { label: "@language", action: "toggle_ascii" }, long_press: { display: "bubble", values: [ { label: "选择输入法", action: "command", value: "show_ime_picker" } ] } }
+
   # 九键（T9）键盘配置
   # 注意：本键盘不支持 button_layout（按键布局模式），固定 standard 键面布局；
   # 此处配置 button_layout: compact 不生效（compact 仅 26 键 qwerty/qwerty_en 支持）。
@@ -426,25 +508,22 @@ keyboard:
     # t9_flypy：方案商店的「小鹤双拼九键」，装了才生效。
     schemas: [t9_pinyin, t9, wanxiang_t9, t9_flypy]
     # ── 左侧快捷符号栏（空闲态显示；列表长度不限，超过 4 个时可上下滑动，右缘有滚动条）──
-    # 默认与常用符号面板第一页的前 16 个相同；列尾的「编辑」打开设置里的「九键侧栏」。
+    # 默认是最常用的中文标点，按使用频率排，括号只留一对；列尾的「编辑」打开设置里的「九键侧栏」。
     # 用户在 xime.custom.yaml 的同路径覆盖整个列表，未配置时使用内置默认值
     side_symbols:
       - "，"
       - "。"
       - "？"
       - "！"
+      - "…"
+      - "～"
       - "、"
       - "："
-      - "；"
-      - "…"
       - "“"
       - "”"
-      - "‘"
-      - "’"
+      - "；"
       - "（"
       - "）"
-      - "《"
-      - "》"
     # ── 数字键手势（可自定义：在 xime.custom.yaml 的 keyboard.t9.keys 同路径覆盖）──
     # 键 id 为数字字符串 "1"~"9"；tap/长按（选字母）为九键核心交互，不在配置范围。
     # 内置默认：上滑直接输入键面数字（无需切数字键盘）；下滑内置不绑定动作，

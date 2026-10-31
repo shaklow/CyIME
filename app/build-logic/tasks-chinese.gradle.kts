@@ -29,13 +29,15 @@ val prepareChineseDictionaries by tasks.registering {
     inputs.property("typewisePreset", 1)
     inputs.property("t9EnglishIndex", 9)
     inputs.file(file("src/main/assets/english.txt"))
-    inputs.property("measuredNeighborCorrection", 2)
+    inputs.property("measuredNeighborCorrection", 3)
     inputs.property("candidatePolicy", 3)
     inputs.property("pinyin26WordModel", 5)
     inputs.property("candidateComments", 1)
     inputs.property("cyimeTerms", 1)
     inputs.property("taiwanTraditional", 1)
     inputs.property("rareCharacters", 1)
+    inputs.property("datetimeHints", 1)
+    inputs.property("symbolNames", 1)
     val extWeights = file("data/rime_ice_ext_weights.tsv.gz")
     inputs.file(extWeights)
     val baseWeights = file("data/rime_ice_base_weights.tsv.gz")
@@ -274,6 +276,18 @@ val prepareChineseDictionaries by tasks.registering {
         check(particles.isNotEmpty()) { "No sentence-final particles in ${finalParticles.name}" }
         // 简/繁 converts to Taiwan everyday forms (台灣, 計畫, 了解): assets/rime_chinese/opencc/cyime_s2tw.json,
         // built by tools/opencc/build_cyime_opencc.py. Upstream's s2t.json gives 臺灣 and was never bundled.
+        // 时间, 日期 and 星期 are followed by the current time or date (librime-t9 datetime_filter.h), the same
+        // filter as the nine-key and 14-key schemas; before traditionalize so 周六 converts with the rest.
+        fun withDatetimeHints(schema: String) = schema.replace("\n    - simplifier@traditionalize",
+            "\n    - cyime_datetime\n    - simplifier@traditionalize")
+            .also { check(it.split("\n    - cyime_datetime\n").size == 2) { "Upstream traditionalize filter changed" } }
+        // 打符号名出符号 (default off, Rime option cyime_symbol_names): 加号 is followed by +, 问号 by ？ and ?.
+        // Table assets/rime_chinese/opencc/cyime_symbols.json, shared with the nine-key and 14-key schemas; after
+        // the emoji filter so the symbols come right after the word, before traditionalize like datetime.
+        fun withSymbolNames(schema: String) = schema.replace("\n    - simplifier@traditionalize",
+            "\n    - simplifier@cyime_symbols\n    - simplifier@traditionalize")
+            .also { check(it.split("\n    - simplifier@cyime_symbols\n").size == 2) { "Upstream traditionalize filter changed" } } +
+            "\ncyime_symbols:\n  option_name: cyime_symbol_names\n  opencc_config: cyime_symbols.json\n  inherit_comment: false\n"
         fun taiwanForms(schema: String) = schema.replace("  opencc_config: s2t.json ", "  opencc_config: cyime_s2tw.json ")
             .also { check(it.contains("  opencc_config: cyime_s2tw.json ")) { "Upstream traditionalize config changed" } }
         val baseSchema = taiwanForms(File(root, "rime_ice.schema.yaml").readText()).replace("\ntranslator:\n",
@@ -286,6 +300,10 @@ val prepareChineseDictionaries by tasks.registering {
             // One letter typed too many inside a syllable (zhonng → 中, shhi → 是), only as an extra key press
             // (same key twice or a neighbour); same 20x gate, never first (docs/development/typo-correction-20261021.md).
             "  cyime_extra_letter_correction: true\n" +
+            // Typed letters that read only with an initial standing alone before the last syllable (zhe'b'zhe'b'g), when
+            // neighbour corrections read them in full (zhen'zheng): such an initial weighs as a slip and the corrected
+            // sentence comes first; long input is corrected from its start (docs/development/typo-correction-20261021.md).
+            "  cyime_stray_initial_correction: true\n" +
             "  sentence_char_homophones: 4\n  sentence_position_penalty: -2.0\n" +
             "  sentence_position_final_only: [${particles.joinToString(", ")}]\n" +
             // 把/被 open a verb phrase and never end a sentence: shuoshuobei is 说说呗, not 说说被.
@@ -299,7 +317,8 @@ val prepareChineseDictionaries by tasks.registering {
                 else if (it == "    - script_translator") sequenceOf(it, "    - lua_translator@*cyime_mixed_input",
                     "    - lua_translator@*cyime_rare_chars") else sequenceOf(it) }
             .joinToString("\n")
-            .replace("  filters:\n", "  filters:\n    - cyime_candidate_policy\n") +
+            .replace("  filters:\n", "  filters:\n    - cyime_candidate_policy\n")
+            .let { withSymbolNames(withDatetimeHints(it)) } +
             "\ncyime:\n  candidate_policy: true\n" +
             // 26-key ranking by the nine-key word n-gram model (docs/development/pinyin26-word-model-20261018.md):
             // same decoder and model file; initials are not penalized (a letter names its initial, unlike a
@@ -349,6 +368,7 @@ val prepareChineseDictionaries by tasks.registering {
         doublePinyin.writeText(taiwanForms(doublePinyin.readText()).replace("\ntranslator:\n",
             "\ntranslator:\n  cyime_neighbor_correction: true\n")
             .replace("  filters:\n", "  filters:\n    - cyime_candidate_policy\n")
+            .let { withSymbolNames(withDatetimeHints(it)) }
             .replace("enable_correction: false", "enable_correction: true"))
         // Built-in letter arrangements (settings/BuiltinLetterLayouts.kt): same schema, own ID and name.
         for ((id, name) in listOf("pinyin_qwjrtk" to "QWJRTK（双拇指）", "pinyin_cyletix10" to "Cyletix10（实验）",
@@ -396,7 +416,7 @@ val prepareChineseDictionaries by tasks.registering {
         // upstream's large table 41448.dict.yaml (Unihan kMandarin + zdic readings) ships disabled. Importing all of
         // it cost the nine-key replay +140% dictionary entries per key at the same first candidates, so the
         // characters 8105 lacks go to cyime_rare.txt instead, read by lua/cyime_rare_chars.lua for full-pinyin 26 keys
-        // only while its switch is on (default off). Only the BMP (URO and Ext A, about 18,000): most Android fonts
+        // and nine keys (t9_pinyin.schema.yaml) only while its switch is on (default off; 槻 gui 2026-10-31 too). Only the BMP (URO and Ext A, about 18,000): most Android fonts
         // have no glyphs for Ext B and beyond, which would show as empty boxes. Only readings 8105 already has (drops
         // 黁 nun). The large table itself is no longer bundled: the generated list is about half its size.
         val common = HashSet<String>()

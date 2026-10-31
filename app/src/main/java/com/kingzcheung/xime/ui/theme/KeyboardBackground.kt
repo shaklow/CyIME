@@ -12,10 +12,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ClipOp
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -23,14 +28,14 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import com.kingzcheung.xime.settings.BackgroundConfig
 import com.kingzcheung.xime.settings.FrostedGlassConfig
 import com.kingzcheung.xime.ui.keyboard.rememberKeyboardInputPreferences
 import kotlin.math.abs
 import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.Dispatchers
@@ -83,7 +88,7 @@ fun Modifier.keyboardBackground(
     translucentSurface: Boolean = false,
 ): Modifier {
     if (frostedGlass.enabled) {
-        return frostedGlassBackground(background, isDark, fallbackColor, frostedGlass, translucentSurface)
+        return frostedGlassBackground(background, isDark, fallbackColor, frostedGlass.forBackground(background), translucentSurface)
     }
     if (background == null) return this.then(Modifier.background(fallbackColor))
 
@@ -119,10 +124,9 @@ fun Modifier.keyboardBackground(
 
             val bitmap = rememberThemeImage(src)
             if (bitmap != null) {
-                val fit = background.fit ?: "cover"
                 return this.then(
                     Modifier.drawWithContent {
-                        drawImageBackground(bitmap, fit)
+                        drawImageBackground(bitmap, background, fallbackColor)
                         drawImageOverlay(background, isDark)
                         drawContent()
                     }
@@ -185,6 +189,8 @@ fun Modifier.keyboardBackgroundBelowCard(
     fallbackColor: Color,
     card: () -> Rect?,
     frostedGlass: FrostedGlassConfig = rememberKeyboardInputPreferences(isDark).frostedGlass,
+    /** 「填满留空处」开着：两侧的图是卡片左右镜像，这条在两侧下面也接着镜像。 */
+    filledSides: Boolean = false,
 ): Modifier {
     val continued = background != null && !frostedGlass.enabled && when (background.type) {
         "gradient" -> gradientColors(background, isDark) != null
@@ -207,7 +213,15 @@ fun Modifier.keyboardBackgroundBelowCard(
                 // 卡片底边为轴上下翻转：卡片最后一行正好落在这条第一行。
                 translate(frame.left, frame.bottom + frame.height) {
                     scale(1f, -1f, pivot = Offset.Zero) {
-                        drawImageBackground(bitmap, background.fit ?: "cover", frame.width, frame.height)
+                        drawImageBackground(bitmap, background, fallbackColor, frame.width, frame.height)
+                    }
+                }
+                // 两侧的图沿卡片左右边镜像；这里再上下翻一次，接着两侧的最后一行。
+                if (filledSides) for (x in listOf(frame.left, frame.right + frame.width)) {
+                    translate(x, frame.bottom + frame.height) {
+                        scale(-1f, -1f, pivot = Offset.Zero) {
+                            drawImageBackground(bitmap, background, fallbackColor, frame.width, frame.height)
+                        }
                     }
                 }
             }
@@ -221,8 +235,11 @@ fun Modifier.keyboardBackgroundBelowCard(
 
 /**
  * 固定卡片窄于整宽时两侧的留空（设置「填满留空处」打开时）：只在卡片那一段高度里铺满整宽。
- * 渐变沿卡片同一条线延伸；图片没有卡片以外的部分，两侧铺主题底色（与导航条两侧相同）；
- * 纯色和毛玻璃照卡片的画法，毛玻璃的模糊由服务另开两侧的模糊窗口。
+ * 渐变沿卡片同一条线延伸；图片没有卡片以外的部分，沿卡片左右边镜像过来（和导航条沿底边镜像同一做法），
+ * 接缝处和卡片边上那一列同色，两侧比卡片还宽时更远处铺主题底色；
+ * 纯色和毛玻璃照卡片的画法，毛玻璃的模糊由服务把卡片那块模糊窗口放宽到整宽。
+ * 只画卡片左右两块，卡片底下不画：半透明的底色和玻璃叠两层，卡片会比两侧深一截（2026-10-31 平板截图）。
+ * 整条的外角（贴着屏幕边）照顶部/底部圆角设置圆，和整宽键盘一样；卡片那边的角由卡片画成直角。
  * [card] 是卡片在窗口里的位置；还没量到时什么也不画。
  */
 @Composable
@@ -232,21 +249,46 @@ fun Modifier.keyboardBackgroundBesideCard(
     fallbackColor: Color,
     card: () -> Rect?,
     frostedGlass: FrostedGlassConfig = rememberKeyboardInputPreferences(isDark).frostedGlass,
+    topCorner: Dp = 0.dp,
+    bottomCorner: Dp = 0.dp,
 ): Modifier {
     var origin by remember { mutableStateOf<Offset?>(null) }
     val gradient = background?.takeIf { !frostedGlass.enabled && it.type == "gradient" }?.let { gradientColors(it, isDark) }
     val image = !frostedGlass.enabled && background?.type == "image"
+    val imageBackground = background?.takeIf { image }
+    val bitmap = imageBackground?.let { themeImageSource(it, isDark) }?.takeIf { it.isNotBlank() }?.let { rememberThemeImage(it) }
     fun frame(): Rect? = origin?.let { o -> card()?.takeIf { it.width > 0f && it.height > 0f }?.translate(-o.x, -o.y) }
     val band = onGloballyPositioned { origin = it.positionInWindow() }.drawWithContent {
         val f = frame() ?: return@drawWithContent
-        clipRect(0f, f.top, size.width, f.bottom) {
-            when {
-                gradient != null -> {
-                    val (start, end) = gradientLine(background!!, f)
-                    drawRect(Brush.linearGradient(gradient, start, end), size = size)
+        val top = CornerRadius(topCorner.toPx())
+        val bottom = CornerRadius(bottomCorner.toPx())
+        val outline = Path().apply {
+            addRoundRect(RoundRect(0f, f.top, size.width, f.bottom,
+                topLeftCornerRadius = top, topRightCornerRadius = top,
+                bottomRightCornerRadius = bottom, bottomLeftCornerRadius = bottom))
+        }
+        clipPath(outline) {
+            clipRect(f.left, f.top, f.right, f.bottom, ClipOp.Difference) {
+                when {
+                    gradient != null -> {
+                        val (start, end) = gradientLine(background!!, f)
+                        drawRect(Brush.linearGradient(gradient, start, end), size = size)
+                    }
+                    image -> {
+                        drawRect(fallbackColor)
+                        if (bitmap != null && imageBackground != null) {
+                            for (x in listOf(f.left, f.right + f.width)) {
+                                translate(x, f.top) {
+                                    scale(-1f, 1f, pivot = Offset.Zero) {
+                                        drawImageBackground(bitmap, imageBackground, fallbackColor, f.width, f.height)
+                                    }
+                                }
+                            }
+                            drawImageOverlay(imageBackground, isDark)
+                        }
+                    }
+                    else -> this@drawWithContent.drawContent()
                 }
-                image -> drawRect(fallbackColor)
-                else -> this@drawWithContent.drawContent()
             }
         }
     }
@@ -265,10 +307,14 @@ internal fun gradientLine(background: BackgroundConfig, frame: Rect): Pair<Offse
         Offset(frame.left + frame.width * endRatio.x, frame.top + frame.height * endRatio.y)
 }
 
-/** 在 DrawScope 内绘制图片背景。 */
+/**
+ * 在 DrawScope 内绘制图片背景。cover/contain/fit_width/fit_height 按 [placeThemeImage] 摆
+ * （含「我的图片」调整页存下的缩放与对齐）；图片没盖满时空出的地方先铺 [fallbackColor]。
+ */
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawImageBackground(
     bitmap: ImageBitmap,
-    fit: String,
+    background: BackgroundConfig,
+    fallbackColor: Color,
     dstW: Float = size.width,
     dstH: Float = size.height,
 ) {
@@ -276,51 +322,13 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawImageBackground
     val srcH = bitmap.height.toFloat()
     if (srcW <= 0f || srcH <= 0f || dstW <= 0f || dstH <= 0f) return
 
-    val scale: Float
-    val offsetX: Float
-    val offsetY: Float
-
-    when (fit) {
-        "contain" -> {
-            scale = min(dstW / srcW, dstH / srcH)
-            offsetX = (dstW - srcW * scale) / 2f
-            offsetY = (dstH - srcH * scale) / 2f
-            clipRect(right = dstW, bottom = dstH) {
-                drawImage(
-                    bitmap,
-                    dstOffset = IntOffset(offsetX.roundToInt(), offsetY.roundToInt()),
-                    dstSize = IntSize((srcW * scale).roundToInt(), (srcH * scale).roundToInt()),
-                )
-            }
-        }
+    when (val fit = background.fit ?: "cover") {
         "fill" -> {
             drawImage(
                 bitmap,
                 dstOffset = IntOffset.Zero,
                 dstSize = IntSize(dstW.roundToInt(), dstH.roundToInt()),
             )
-        }
-        "fit_width" -> {
-            scale = dstW / srcW
-            offsetY = (dstH - srcH * scale) / 2f
-            clipRect(right = dstW, bottom = dstH) {
-                drawImage(
-                    bitmap,
-                    dstOffset = IntOffset(0, offsetY.roundToInt()),
-                    dstSize = IntSize((srcW * scale).roundToInt(), (srcH * scale).roundToInt()),
-                )
-            }
-        }
-        "fit_height" -> {
-            scale = dstH / srcH
-            offsetX = (dstW - srcW * scale) / 2f
-            clipRect(right = dstW, bottom = dstH) {
-                drawImage(
-                    bitmap,
-                    dstOffset = IntOffset(offsetX.roundToInt(), 0),
-                    dstSize = IntSize((srcW * scale).roundToInt(), (srcH * scale).roundToInt()),
-                )
-            }
         }
         "none" -> {
             drawImage(
@@ -329,15 +337,14 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawImageBackground
                 dstSize = IntSize(srcW.roundToInt(), srcH.roundToInt()),
             )
         }
-        else -> { // cover (default)
-            scale = max(dstW / srcW, dstH / srcH)
-            offsetX = (dstW - srcW * scale) / 2f
-            offsetY = (dstH - srcH * scale) / 2f
+        else -> {
+            val frame = placeThemeImage(srcW, srcH, dstW, dstH, fit, background.zoom, background.alignX, background.alignY)
             clipRect(right = dstW, bottom = dstH) {
+                if (!frame.covers(dstW, dstH)) drawRect(fallbackColor, size = androidx.compose.ui.geometry.Size(dstW, dstH))
                 drawImage(
                     bitmap,
-                    dstOffset = IntOffset(offsetX.roundToInt(), offsetY.roundToInt()),
-                    dstSize = IntSize((srcW * scale).roundToInt(), (srcH * scale).roundToInt()),
+                    dstOffset = IntOffset(frame.left.roundToInt(), frame.top.roundToInt()),
+                    dstSize = IntSize(frame.width.roundToInt(), frame.height.roundToInt()),
                 )
             }
         }

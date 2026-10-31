@@ -16,6 +16,13 @@ object SettingsPreferences {
     fun setRoundedKeyboardBottom(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_ROUNDED_KEYBOARD_BOTTOM, enabled).apply()
     }
+    /** 固定键盘顶部两角是否圆角；默认开（原样）。悬浮键盘是卡片，四角始终圆。 */
+    const val KEY_ROUNDED_KEYBOARD_TOP = "rounded_keyboard_top"
+    fun roundedKeyboardTop(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_ROUNDED_KEYBOARD_TOP, true)
+    fun setRoundedKeyboardTop(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_ROUNDED_KEYBOARD_TOP, enabled).apply()
+    }
     const val KEY_PUNCTUATION_FULL_WIDTH = "punctuation_full_width"
     fun punctuationFullWidth(context: Context, default: Boolean): Boolean =
         getPrefs(context).getBoolean(KEY_PUNCTUATION_FULL_WIDTH, default)
@@ -57,6 +64,8 @@ object SettingsPreferences {
     private const val KEY_PREDICTION_SELECTED_MODEL = "prediction_selected_model"
     private const val KEY_SPACE_COMMIT_ASSOCIATION = "space_commit_association"
     private const val KEY_ASSOCIATION_SINGLE_MODE = "association_single_mode"
+    private const val KEY_DELETE_SKIPS_ASSOCIATION = "delete_skips_association"
+    private const val KEY_UNLEARN_REJECTED_COMMIT = "unlearn_rejected_commit"
     
     const val KEY_STT_ENABLED = "stt_enabled"
     const val KEY_STT_ONLINE_PLUGIN_ID = "stt_online_plugin_id"
@@ -66,6 +75,11 @@ object SettingsPreferences {
     const val KEY_STT_ENGINE_IDLE_MINUTES = "stt_engine_idle_minutes"
     const val KEY_STT_DEBUG_RECORD = "stt_debug_record"
     const val KEY_STT_WHOLE_SENTENCE = "stt_whole_sentence"
+    const val KEY_STT_AUTO_PUNCTUATION = "stt_auto_punctuation"
+    const val KEY_STT_PUNCTUATION_COMMA = "stt_punctuation_comma"
+    const val KEY_STT_PUNCTUATION_PERIOD = "stt_punctuation_period"
+    const val KEY_STT_PUNCTUATION_QUESTION = "stt_punctuation_question"
+    const val KEY_STT_PILL_RESUME = "stt_pill_resume"
     
     /** 默认主题 ID，可从 xime.yaml 的 style.color_scheme 初始化。 */
     @JvmStatic
@@ -99,6 +113,15 @@ object SettingsPreferences {
         getPrefs(context).edit().putBoolean(KEY_SPLIT_KEYBOARD, enabled).apply()
     }
 
+    const val KEY_SPLIT_RIGHT_G = "split_keyboard_right_g"
+
+    /** 分体 26 键右半中排开头再放一个 G（别人提的需求，默认关）；只影响分体键盘。 */
+    fun isSplitRightGEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_SPLIT_RIGHT_G, false)
+
+    fun setSplitRightGEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_SPLIT_RIGHT_G, enabled).apply()
+    }
+
     const val KEY_FILL_KEYBOARD_BLANK = "fill_keyboard_blank"
 
     /**
@@ -109,6 +132,30 @@ object SettingsPreferences {
 
     fun setKeyboardBlankFilled(context: Context, filled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_FILL_KEYBOARD_BLANK, filled).apply()
+    }
+
+    const val KEY_WIDE_KEYS = "wide_keys"
+
+    /**
+     * 「加宽按键」默认关：打开后键盘两侧留白从 8dp 收到 3dp、横向键缝减三分之一，
+     * 手机上每个键更宽，触摸键距也更大（10-31 用户反馈手机上按键窄、容易误触）。
+     */
+    fun isWideKeysEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_WIDE_KEYS, false)
+
+    fun setWideKeysEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_WIDE_KEYS, enabled).apply()
+    }
+
+    const val KEY_EVEN_MERGED_KEYS = "even_merged_keys"
+
+    /**
+     * 「合并键均匀排布」默认关：打开后 14 键和自建的合并键布局（17、18、20 键等）里合并键只比单字母键宽三分之一，
+     * 单字母键相应变宽，每行排得更匀，小屏上好按（10-31 别人的需求）。关闭时严格对齐 26 键键缝。
+     */
+    fun isEvenMergedKeysEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_EVEN_MERGED_KEYS, false)
+
+    fun setEvenMergedKeysEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_EVEN_MERGED_KEYS, enabled).apply()
     }
 
     const val KEY_SPLIT_GAP_PORTRAIT = "split_gap_fraction_portrait"
@@ -153,6 +200,12 @@ object SettingsPreferences {
         val toolbar = getToolbarButtons(context)
         restoreFullShapeMenuItemOnce(context, toolbar)
         insertMenuItemOnce(context, toolbar, com.kingzcheung.xime.keyboard.ToolbarButton.CAPTION.id, KEY_CAPTION_MENU_INSERTED)
+        // 悬浮、简繁：放在全角/半角后面（不在菜单里就放在“排列”前），与新装默认菜单同一位置。
+        var after = com.kingzcheung.xime.keyboard.ToolbarButton.FULL_SHAPE.id
+        com.kingzcheung.xime.keyboard.QuickActionLayout.MENU_TOGGLES_1031.forEach {
+            insertMenuItemOnce(context, toolbar, it.id, "quick_actions_${it.id}_inserted", after)
+            after = it.id
+        }
         com.kingzcheung.xime.keyboard.ToolbarButton.LAYOUT_GESTURES.forEach {
             insertMenuItemOnce(context, toolbar, it.id, "quick_actions_${it.id}_inserted")
         }
@@ -184,8 +237,11 @@ object SettingsPreferences {
     }
     private const val KEY_FULL_SHAPE_MENU_RESTORED = "quick_actions_full_shape_restored"
 
-    /** A new built-in entry joins an already saved menu once (before 排列); removing it later is kept. */
-    private fun insertMenuItemOnce(context: Context, toolbar: List<String>, id: String, flagKey: String) {
+    /**
+     * A new built-in entry joins an already saved menu once, right after [after] when that is in
+     * the menu, otherwise before 排列; removing it later is kept.
+     */
+    private fun insertMenuItemOnce(context: Context, toolbar: List<String>, id: String, flagKey: String, after: String? = null) {
         val prefs = getPrefs(context)
         if (prefs.getBoolean(flagKey, false)) return
         val raw = prefs.getString(KEY_MENU_BUTTONS, null)
@@ -194,7 +250,8 @@ object SettingsPreferences {
             val menu = raw.split(",").filter { it.isNotEmpty() }
             if (id !in menu) {
                 val arrange = com.kingzcheung.xime.keyboard.ToolbarButton.ARRANGE.id
-                val at = menu.indexOf(arrange).takeIf { it >= 0 } ?: menu.size
+                val at = after?.let { menu.indexOf(it) }?.takeIf { it >= 0 }?.plus(1)
+                    ?: menu.indexOf(arrange).takeIf { it >= 0 } ?: menu.size
                 editor.putString(KEY_MENU_BUTTONS, (menu.take(at) + id + menu.drop(at)).joinToString(","))
             }
         }
@@ -225,9 +282,11 @@ object SettingsPreferences {
     const val KEY_CANDIDATE_COMMENT_MODE = "candidate_comment_mode"
     const val KEY_CANDIDATE_COMMENT_CONTENT = "candidate_comment_content"
     const val KEY_SHOW_CANDIDATE_CANCEL_BUTTON = "show_candidate_cancel_button"
+    const val KEY_ASSOCIATION_CANCEL_ON_RIGHT = "association_cancel_on_right"
     private const val KEY_INPUT_TEXT_LOCATION = "input_text_location"
     private const val KEY_PAGE_SIZE = "page_size"
     private const val KEY_CANDIDATE_TEXT_SIZE = "candidate_text_size"
+    const val KEY_WIDE_CANDIDATE_SPACING = "wide_candidate_spacing"
     const val INPUT_TEXT_INPUT_BOX = "input_box"
     const val INPUT_TEXT_CANDIDATE_BAR = "candidate_bar"
     const val DEFAULT_PAGE_SIZE = 20 // 手机候选栏每页候选词数；schema 里的 page_size 来自 PC 版（5），太短，默认用 20
@@ -264,13 +323,35 @@ object SettingsPreferences {
         setCandidateCommentMode(context, if (show) CandidateCommentMode.SHOW else CandidateCommentMode.HIDE)
     }
 
-    /** 候选词默认靠左；需要一键取消编码时可自行启用。 */
+    /** 默认打开（用户 10-31）：打字时候选栏最左边有「<」一键取消编码。手动关过的仍按存下的值。 */
     fun shouldShowCandidateCancelButton(context: Context): Boolean {
-        return getPrefs(context).getBoolean(KEY_SHOW_CANDIDATE_CANCEL_BUTTON, false)
+        return getPrefs(context).getBoolean(KEY_SHOW_CANDIDATE_CANCEL_BUTTON, true)
     }
 
     fun setShowCandidateCancelButton(context: Context, show: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_SHOW_CANDIDATE_CANCEL_BUTTON, show).apply()
+    }
+
+    /**
+     * 联想时关闭键放右边（B站反馈 10-31，别人的需求，默认关）：上屏后的联想词前面不放「<」，
+     * 改成右边一个 ⊗，点第一个联想词不会误点到关闭。打字时的「<」不变；只在取消按钮开着时有用。
+     */
+    fun isAssociationCancelOnRight(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_ASSOCIATION_CANCEL_ON_RIGHT, false)
+
+    fun setAssociationCancelOnRight(context: Context, onRight: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_ASSOCIATION_CANCEL_ON_RIGHT, onRight).apply()
+    }
+
+    /**
+     * 候选词间距加宽（B站反馈 10-31，别人的需求，默认关）：候选栏里两个候选之间约空出一个字，
+     * 单字候选不挤在一起。关着时间距不变。
+     */
+    fun isWideCandidateSpacing(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_WIDE_CANDIDATE_SPACING, false)
+
+    fun setWideCandidateSpacing(context: Context, wide: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_WIDE_CANDIDATE_SPACING, wide).apply()
     }
 
     fun getInputTextLocation(context: Context): String {
@@ -588,6 +669,28 @@ object SettingsPreferences {
     fun setAssociationSingleMode(context: Context, single: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_ASSOCIATION_SINGLE_MODE, single).apply()
     }
+
+    /**
+     * 退格直接删字（B站反馈 10-31，别人的需求，默认关）：联想词出现时退格直接删掉刚上屏的字、顺手收起联想，
+     * 不用先按一下收起联想。关着时照旧：第一下收起联想，第二下才删字。
+     */
+    fun isDeleteSkipsAssociation(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_DELETE_SKIPS_ASSOCIATION, false)
+
+    fun setDeleteSkipsAssociation(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_DELETE_SKIPS_ASSOCIATION, enabled).apply()
+    }
+
+    /**
+     * 删掉刚上屏的词不学习（B站反馈 10-31，别人的需求，默认关）：刚上屏的词紧接着被整个删掉（退格或上滑清空），
+     * 用户词库减去这一次学习，误触打出的怪词不会因此排到前面。见 RejectedCommit。
+     */
+    fun isUnlearnRejectedCommit(context: Context): Boolean =
+        getPrefs(context).getBoolean(KEY_UNLEARN_REJECTED_COMMIT, false)
+
+    fun setUnlearnRejectedCommit(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_UNLEARN_REJECTED_COMMIT, enabled).apply()
+    }
     
     fun isSttEnabled(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_STT_ENABLED, true)
@@ -687,6 +790,42 @@ object SettingsPreferences {
         getPrefs(context).edit().putBoolean(KEY_STT_WHOLE_SENTENCE, enabled).apply()
     }
 
+    /**
+     * 语音自动加标点：整句定稿时保留模型打的标点。默认关，和 1.15.0 以前一样：模型的标点变成空格，
+     * 只有口述「逗号」「句号」「问号」「感叹号」出标点。1.15.0–1.15.21 把标点绑在整句定稿上、
+     * 又默认开，用户没法只去掉标点（2026-10-31 用户：「不要改我的习惯」）。
+     */
+    fun isSttAutoPunctuation(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_STT_AUTO_PUNCTUATION, false)
+    }
+
+    fun setSttAutoPunctuation(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_STT_AUTO_PUNCTUATION, enabled).apply()
+    }
+
+    /** 自动加标点开着时逐项选留哪些模型标点；默认全留（打开自动加标点就和原来一样带全部标点）。 */
+    fun isSttPunctuationComma(context: Context) = getPrefs(context).getBoolean(KEY_STT_PUNCTUATION_COMMA, true)
+    fun setSttPunctuationComma(context: Context, enabled: Boolean) =
+        getPrefs(context).edit().putBoolean(KEY_STT_PUNCTUATION_COMMA, enabled).apply()
+    fun isSttPunctuationPeriod(context: Context) = getPrefs(context).getBoolean(KEY_STT_PUNCTUATION_PERIOD, true)
+    fun setSttPunctuationPeriod(context: Context, enabled: Boolean) =
+        getPrefs(context).edit().putBoolean(KEY_STT_PUNCTUATION_PERIOD, enabled).apply()
+    fun isSttPunctuationQuestion(context: Context) = getPrefs(context).getBoolean(KEY_STT_PUNCTUATION_QUESTION, true)
+    fun setSttPunctuationQuestion(context: Context, enabled: Boolean) =
+        getPrefs(context).edit().putBoolean(KEY_STT_PUNCTUATION_QUESTION, enabled).apply()
+
+    /**
+     * 开车连续语音：语音悬浮条听写时发出消息或离开输入框，回到同一应用的输入框自动接着听。
+     * 别人提的需求，默认关（用户 10-30 规则）；见 VoicePillResume。
+     */
+    fun isSttPillResume(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_STT_PILL_RESUME, false)
+    }
+
+    fun setSttPillResume(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_STT_PILL_RESUME, enabled).apply()
+    }
+
     // ---- 插件网络授权（per plugin per host） ----
 
     /** 插件已获用户授权的域名集合。 */
@@ -767,7 +906,6 @@ object SettingsPreferences {
     }
 
     fun getKeyboardHeightDp(context: Context, isLandscape: Boolean): Int {
-        if (isLandscape) ensureLandscapeDefaults(context)
         val key = if (isLandscape) KEY_KEYBOARD_HEIGHT_DP_LANDSCAPE else KEY_KEYBOARD_HEIGHT_DP
         val alt = if (isLandscape) KEY_KEYBOARD_HEIGHT_DP else KEY_KEYBOARD_HEIGHT_DP_LANDSCAPE
         val stored = getPrefs(context).getInt(key, -1)
@@ -824,17 +962,11 @@ object SettingsPreferences {
     private const val KEY_FLOATING_WIDTH_DP_LANDSCAPE = "floating_width_dp_landscape"
     private const val KEY_KEYBOARD_OPACITY = "keyboard_opacity"
 
-    private fun ensureLandscapeDefaults(context: Context) {
-        val prefs = getPrefs(context)
-        if (!prefs.getBoolean("landscape_layout_v2", false)) prefs.edit()
-            .putBoolean("landscape_layout_v2", true).putBoolean(KEY_FLOATING_MODE_LANDSCAPE, true)
-            .putFloat("keyboard_opacity_landscape", 0.5f).apply()
-    }
-
     fun getKeyboardOpacity(context: Context): Float {
         val landscape = context.resources.configuration.screenWidthDp > context.resources.configuration.screenHeightDp
-        if (landscape) ensureLandscapeDefaults(context)
-        return getPrefs(context).getFloat(if (landscape) "keyboard_opacity_landscape" else KEY_KEYBOARD_OPACITY, if (landscape) 0.5f else 1f).coerceIn(0.3f, 1f)
+        // 横屏新装和竖屏一样固定、不透明（用户 10-31）。早先版本第一次横屏时写入了半透明悬浮（landscape_layout_v2），
+        // 写过的人保留原值；没写过的按这里的默认。
+        return getPrefs(context).getFloat(if (landscape) "keyboard_opacity_landscape" else KEY_KEYBOARD_OPACITY, 1f).coerceIn(0.3f, 1f)
     }
 
     fun setKeyboardOpacity(context: Context, opacity: Float) {
@@ -843,7 +975,6 @@ object SettingsPreferences {
     }
 
     fun isFloatingMode(context: Context, isLandscape: Boolean = false): Boolean {
-        if (isLandscape) ensureLandscapeDefaults(context)
         val key = if (isLandscape) KEY_FLOATING_MODE_LANDSCAPE else KEY_FLOATING_MODE
         return getPrefs(context).getBoolean(key, false)
     }

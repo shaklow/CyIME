@@ -52,3 +52,38 @@ internal fun spacePunctuationKeys(comma: Boolean, period: Boolean, fullWidth: Bo
     }
     return Pair(commaKey, periodKey)
 }
+
+/** 拼音的音节分隔符，Rime 方案的 delimiter 里就是它（xi'an）。 */
+internal const val SYLLABLE_SEPARATOR = "'"
+
+/**
+ * 「逗号键分词」（默认关，B 站评论要的）只管中文全拼、双拼：英文、日文、注音、仓颉等没有拼音音节，照旧。
+ * 开着时：空格旁的标点键左下角是 '；打拼音时它是分词，没在打拼音时上屏 '（印什么出什么）。
+ */
+internal fun syllableSplitActive(setting: Boolean, ascii: Boolean, profile: com.kingzcheung.xime.settings.InputProfile): Boolean =
+    setting && !ascii && profile.language == com.kingzcheung.xime.settings.InputLanguage.CHINESE &&
+        profile.capabilities.editablePinyin
+
+/**
+ * 字母键帽这次显示大写吗（只管显示，送出的字母不变）：「字母键显示大写」一律大写；
+ * 「中文键盘字母显示大写」只在中文（非英文模式）时大写，英文照 Shift，一看键帽就知道是中文还是英文。
+ */
+internal fun letterLabelsUppercase(prefs: KeyboardInputPreferences, ascii: Boolean, profile: com.kingzcheung.xime.settings.InputProfile): Boolean =
+    prefs.uppercaseKeyLabels || prefs.chineseUppercaseKeyLabels && !ascii &&
+        profile.language == com.kingzcheung.xime.settings.InputLanguage.CHINESE
+
+/** 哪个标点键带分词角标：有逗号键放逗号键，只开句号键放句号键，两个都关就没有（first 左、second 右）。 */
+internal fun syllableSplitOnPunctuation(active: Boolean, left: SpacePunctuationKey?, right: SpacePunctuationKey?): Pair<Boolean, Boolean> =
+    if (!active) false to false else if (left != null) true to false else false to (right != null)
+
+/**
+ * 字母键角标里的 '（26 键 F 的下角标）在分词开着时走按键：打拼音时是分词，不再把字母原样上屏再接 '；
+ * 没在打拼音时照旧上屏 '。其他角标符号不受影响。
+ */
+internal fun cornerTypesSeparator(active: Boolean, value: String): Boolean = active && value == SYLLABLE_SEPARATOR
+
+/**
+ * 「Shift 键分词」（默认关，B 站评论要的）：只在打拼音时把点按 Shift 换成分词；没在打拼音时、
+ * 按住 Shift 打大写、拖到字母上都照旧。生效范围和逗号键分词一样，见 [syllableSplitActive]。
+ */
+internal fun shiftTapTypesSeparator(active: Boolean, composing: Boolean): Boolean = active && composing

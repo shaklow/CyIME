@@ -2,13 +2,18 @@ package com.kingzcheung.xime.settings
 
 /** Product language, never a keyboard shape or a recognizer. */
 enum class InputLanguage(val id: String, val displayName: String) {
-    CHINESE("zh", "中文"), JAPANESE("ja", "日语"), ENGLISH("en", "英文"),
+    CHINESE("zh", "中文"), JAPANESE("ja", "日语"), ENGLISH("en", "英文"), SPANISH("es", "西班牙语"),
     UNSPECIFIED("und", "未标注语言");
 
+    /** Latin languages typed letter by letter straight into the editor, with word completions above. */
+    val typesLettersDirectly: Boolean get() = this == ENGLISH || this == SPANISH
+
     companion object {
-        /** The elder package offers no Japanese anywhere; see docs/development/elder-pack-spec.md. */
+        /** The elder package offers no Japanese or Spanish anywhere; see docs/development/elder-pack-spec.md. */
         val supported = if (com.kingzcheung.xime.BuildConfig.ELDER) listOf(CHINESE, ENGLISH)
-            else listOf(CHINESE, JAPANESE, ENGLISH)
+            else listOf(CHINESE, JAPANESE, ENGLISH, SPANISH)
+        /** Languages a shipped speech recognizer can transcribe. Spanish has none yet. */
+        val speech: List<InputLanguage> get() = supported.filterNot { it == SPANISH }
         fun fromId(id: String): InputLanguage? = entries.firstOrNull { it.id == id }
         /** Compatibility boundary for stored Rime IDs. New business code uses InputProfile. */
         fun forSchema(id: String): InputLanguage = InputProfiles.describe(id).language
@@ -20,7 +25,7 @@ enum class InputScheme(val id: String, val displayName: String) {
     PINYIN("pinyin", "拼音"), DOUBLE_PINYIN("double_pinyin", "双拼"),
     WUBI("wubi", "五笔"), WUBI_PINYIN("wubi_pinyin", "五笔拼音混输"), STROKE("stroke", "笔画"),
     ROMAJI("romaji", "罗马字"), KANA("kana", "假名"), DIRECT("direct", "直接输入"),
-    EXTERNAL("external", "自定义编码"), ZHUYIN("zhuyin", "注音");
+    EXTERNAL("external", "自定义编码"), ZHUYIN("zhuyin", "注音"), CANGJIE("cangjie", "仓颉");
 
     companion object { fun fromId(id: String): InputScheme? = entries.firstOrNull { it.id == id } }
 }
@@ -89,6 +94,8 @@ object InputProfiles {
         InputScheme.WUBI, InputScheme.WUBI_PINYIN -> "字根编码"
         InputScheme.EXTERNAL -> "自定义编码"
         InputScheme.ZHUYIN -> "ㄓㄨˋㄧㄣ"
+        // 倉：仓颉 oiar，速成取首尾 or
+        InputScheme.CANGJIE -> if ((profile.engineProfile as? EngineProfile.Rime)?.schemaId == "cyime_quick") "人口" else "人戈日口"
     }
     private val descriptions = java.util.concurrent.ConcurrentHashMap<String, InputProfile>()
     @Volatile private var installed: Map<String, InputProfile> = emptyMap()
@@ -102,7 +109,7 @@ object InputProfiles {
     fun describe(id: String, language: InputLanguage? = null, scheme: InputScheme? = null): InputProfile {
         // Built-in descriptions are reused on every key; custom layouts remain live after edits.
         val base = installed[id] ?: builtin(id)
-        val custom = CustomKeyboardLayouts.find(id)
+        val custom = CustomKeyboardLayouts.forSchema(id)
         val actualLayout = custom?.let(::customLayout) ?: base.layout
         if ((language == null || language == base.language) && (scheme == null || scheme == base.scheme) && actualLayout == base.layout) return base
         val actualScheme = scheme ?: base.scheme
@@ -129,7 +136,7 @@ object InputProfiles {
 
     private fun describeBackend(id: String): InputProfile {
         val inputScheme = when {
-            id == InputModes.ENGLISH -> InputScheme.DIRECT
+            id == InputModes.ENGLISH || id == SpanishSchemas.ID -> InputScheme.DIRECT
             id in pinyinIds || CustomKeyboardLayouts.isCustom(id) -> InputScheme.PINYIN
             id in doublePinyinIds || DoublePinyinSchemes.isGenerated(id) -> InputScheme.DOUBLE_PINYIN
             id in wubiIds -> InputScheme.WUBI
@@ -138,13 +145,15 @@ object InputProfiles {
             id == "japanese" || id == "jaroomaji" -> InputScheme.ROMAJI
             id == "japanese_kana" -> InputScheme.KANA
             id == "cyime_zhuyin" -> InputScheme.ZHUYIN
+            id == "cyime_cangjie" || id == "cyime_quick" -> InputScheme.CANGJIE
             else -> InputScheme.EXTERNAL
         }
         val inputLanguage = when {
             id == InputModes.ENGLISH -> InputLanguage.ENGLISH
+            id == SpanishSchemas.ID -> InputLanguage.SPANISH
             inputScheme in setOf(InputScheme.ROMAJI, InputScheme.KANA) -> InputLanguage.JAPANESE
             inputScheme in setOf(InputScheme.PINYIN, InputScheme.DOUBLE_PINYIN, InputScheme.WUBI,
-                InputScheme.WUBI_PINYIN, InputScheme.STROKE, InputScheme.ZHUYIN) || id == "handwriting" -> InputLanguage.CHINESE
+                InputScheme.WUBI_PINYIN, InputScheme.STROKE, InputScheme.ZHUYIN, InputScheme.CANGJIE) || id == "handwriting" -> InputLanguage.CHINESE
             else -> InputLanguage.UNSPECIFIED
         }
         val layout = when {
@@ -175,7 +184,9 @@ object InputProfiles {
 
     /** Actual layout bindings win over built-in defaults, including an explicitly unbound schema. */
     fun resolveLayout(section: String?, custom: CustomKeyboardLayout? = null): InputLayout = when (section) {
-        "qwerty", "qwerty_en", "qwerty_japanese" -> InputLayout(section, "26键", LayoutKind.ALPHABETIC)
+        "qwerty", "qwerty_en", "qwerty_japanese", "qwerty_spanish" -> InputLayout(section, "26键", LayoutKind.ALPHABETIC)
+        // 仓颉只是键帽换成字根，仍是中文的 26 键：同一个布局，方案行里与拼音、双拼、五笔并列。
+        "qwerty_cangjie" -> InputLayout.QWERTY
         "t9" -> InputLayout.T9
         "stroke" -> InputLayout.STROKE
         "handwriting" -> InputLayout.HANDWRITING
@@ -195,7 +206,7 @@ object InputProfiles {
         scheme: InputScheme? = null, arranged: Boolean = true): InputProfile {
         if (asciiMode || id == InputModes.ENGLISH) return describe(InputModes.ENGLISH).let { if (arranged) arranged(it) else it }
         val profile = describe(id, language, scheme)
-        val layout = resolveLayout(KeysConfigHelper.boundSectionForSchema(id), CustomKeyboardLayouts.find(id))
+        val layout = resolveLayout(KeysConfigHelper.boundSectionForSchema(id), CustomKeyboardLayouts.forSchema(id))
         val bound = if (layout.kind == LayoutKind.HANDWRITING) profile.handwriting()
             else if (profile.mode == InputMode.HANDWRITING) profile.copy(layout = layout,
                 mode = InputMode.KEYBOARD, engineProfile = EngineProfile.Rime(id))

@@ -1,5 +1,6 @@
 package com.kingzcheung.xime.ui.settings
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.twotone.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -33,10 +35,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.kingzcheung.xime.runtime.adaptation.DeviceCapabilities
 import com.kingzcheung.xime.runtime.adaptation.DeviceCapabilityProbe
@@ -45,7 +51,7 @@ import com.kingzcheung.xime.settings.PerformanceProfile
 import com.kingzcheung.xime.settings.PerformanceSettings
 import kotlin.math.roundToInt
 
-private val tierNames = mapOf(PerformanceTier.HIGH to "高配", PerformanceTier.MEDIUM to "中配", PerformanceTier.LOW to "低配")
+internal val tierNames = mapOf(PerformanceTier.HIGH to "高配", PerformanceTier.MEDIUM to "中配", PerformanceTier.LOW to "低配")
 private val tierHints = mapOf(
     PerformanceTier.HIGH to "动效和炫光全开，语音模型常驻，二次校正模型空闲 30 分钟后释放",
     PerformanceTier.MEDIUM to "保留按键动效，语音空闲 5 分钟先释放二次校正模型，30 分钟后全部释放",
@@ -53,10 +59,16 @@ private val tierHints = mapOf(
 )
 private fun idleLabel(minutes: Int) = if (minutes == 0) "永不" else "$minutes 分钟"
 
-/** 性能与省电：一键选档；改任何一项自动变成“自定义”。 */
+private val ladder = listOf(PerformanceTier.LOW, PerformanceTier.MEDIUM, PerformanceTier.HIGH)
+
+/**
+ * 性能与省电：一键选档；改任何一项自动变成“自定义”。
+ * 和「按设备推荐配置」分工：这页随时调、马上生效（动效、语音模型常驻多久）；用哪些模型、删哪些在那一页，
+ * 那里要下载、删文件，点了「按推荐设置」才改。两页互相有入口，设备档位用同一个判断。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PerformanceSettingsContent(onBack: () -> Unit) {
+fun PerformanceSettingsContent(onBack: () -> Unit, onOpenSetupGuide: (() -> Unit)? = null) {
     val context = LocalContext.current
     var settings by remember { mutableStateOf(PerformanceProfile.read(context)) }
     var auto by remember { mutableStateOf(PerformanceProfile.isAuto(context)) }
@@ -83,13 +95,16 @@ fun PerformanceSettingsContent(onBack: () -> Unit) {
         LazyColumn(modifier = Modifier.settingsGutterScroll(listState).fillMaxSize().padding(padding).padding(horizontal = 16.dp), state = listState,
             verticalArrangement = Arrangement.spacedBy(16.dp)) {
             item {
-                Text("本机：${describe(device)} · 本机配置推荐：${tierNames.getValue(detected)}",
+                Text("本机：${describe(device)}",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp))
             }
             item {
                 SettingsSection(title = "档位") {
-                    TierRow("自动（推荐）", "按本机配置自动选档 · 本机配置推荐：${tierNames.getValue(detected)}", auto) {
+                    PerformanceScale(settings)
+                    HorizontalDivider(Modifier.padding(horizontal = 16.dp), thickness = 0.5.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    TierRow("自动（推荐）", "按本机配置选：${tierNames.getValue(detected)}", auto) {
                         PerformanceProfile.applyAuto(context); refresh()
                     }
                     listOf(PerformanceTier.HIGH, PerformanceTier.MEDIUM, PerformanceTier.LOW).forEach { tier ->
@@ -98,11 +113,10 @@ fun PerformanceSettingsContent(onBack: () -> Unit) {
                             PerformanceProfile.applyPreset(context, tier); refresh()
                         }
                     }
-                    // 「自定义」不是可点的档位：只有手动改过明细或动效时才显示，表示当前状态。
-                    if (!auto && current == null) {
-                        RowDivider()
-                        TierRow("自定义", "已单独调整明细或「按键效果」里的动效、炫光", true, enabled = false) {}
-                    }
+                    // 「自定义」一直列着但不能点：手动改过明细或动效、值对不上任何一档时自动选中，表示当前状态。
+                    val isCustom = !auto && current == null
+                    RowDivider()
+                    TierRow("自定义", "改了下面的明细或「按键效果」里的动效、炫光后自动选中", isCustom, enabled = false) {}
                 }
             }
             item {
@@ -110,12 +124,21 @@ fun PerformanceSettingsContent(onBack: () -> Unit) {
                     // 分档横条，与「输入体验」里长按时长等设置同一样式：标题写当前值，下面一行说明，再是分档滑块。
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         IdleLevelSlider("语音二次校正空闲后释放", settings.speechRefinerIdleMinutes,
-                            "边说边出字＋二次校正时，先卸掉校正模型（SenseVoice 或 X-ASR），保留出字模型；再用时第一句定稿稍慢。只用一个模型（如只用 SenseVoice）时不起作用",
+                            "先卸掉二次校正模型，再用时第一句定稿稍慢；只用一个语音模型时不起作用",
                             "speech-refiner-idle-slider") { custom(settings.copy(speechRefinerIdleMinutes = it)) }
                         HorizontalDivider(Modifier.padding(vertical = 8.dp))
                         IdleLevelSlider("语音模型空闲后全部释放", settings.speechEngineIdleMinutes,
                             "“永不”= 一直常驻，按麦克风最快，占内存最多",
                             "speech-engine-idle-slider") { custom(settings.copy(speechEngineIdleMinutes = it)) }
+                    }
+                }
+            }
+            onOpenSetupGuide?.let { open ->
+                item {
+                    SettingsSection(title = "模型") {
+                        SettingsItem(icon = Icons.TwoTone.Tune, title = "按设备推荐配置",
+                            subtitle = "语音、九键、联想用哪些模型，删掉用不到的",
+                            onClick = open, showArrow = true)
                     }
                 }
             }
@@ -155,14 +178,12 @@ internal fun TierRow(title: String, subtitle: String, selected: Boolean, enabled
     }
 }
 
-/** 空闲释放时间的几个档：1、5、10、30、60 分钟和“永不”（0）。 */
-private val idleLevels = listOf(1, 5, 10, 30, 60, 0)
+private val idleLevels = PerformanceProfile.idleLevels
 
 @Composable
 private fun IdleLevelSlider(title: String, minutes: Int, description: String, tag: String, onChoose: (Int) -> Unit) {
     // 旧设置里可能有不在档位上的值：落到最接近的档显示，拖动后才改。
-    val index = idleLevels.indexOf(minutes).takeIf { it >= 0 }
-        ?: idleLevels.indices.filter { idleLevels[it] != 0 }.minBy { kotlin.math.abs(idleLevels[it] - minutes) }
+    val index = PerformanceProfile.idleLevelIndex(minutes)
     var position by remember(minutes) { mutableStateOf(index.toFloat()) }
     val shown = idleLevels[position.roundToInt().coerceIn(idleLevels.indices)]
     // 和「按键效果」里的滑条同一写法：标题 + 主题色当前值一行，说明，滑条；两端标出最短和“永不”。
@@ -181,6 +202,67 @@ private fun IdleLevelSlider(title: String, minutes: Int, description: String, ta
             Text(idleLabel(idleLevels.first()), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.weight(1f))
             Text(idleLabel(idleLevels.last()), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** 刻度条两端各留半个圆点宽，0 分和 100 分的圆点不出界；文字按同一位置对齐。 */
+private val scaleInset = 10.dp
+
+/**
+ * 档位卡片顶上的刻度条：标题下面一条和滑条同色的横条，低配、中配、高配三档按同一算法标刻度，
+ * 实心圆点是当前设置。选中某档时圆点正好压在那档的刻度上；自定义时落在两档之间。
+ */
+@Composable
+private fun PerformanceScale(settings: PerformanceSettings) {
+    val colors = MaterialTheme.colorScheme
+    val score = PerformanceProfile.score(settings)
+    val current = PerformanceProfile.matching(settings)
+    val ticks = ladder.map { it to PerformanceProfile.score(PerformanceProfile.presets.getValue(it)) }
+    Column(Modifier.fillMaxWidth().testTag("performance-scale").padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // 刻度条自己就看得出在哪一档、几分，标题后面不再写一句“几分，就是高配”（用户 10-31）。
+        Text("配置高低", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        ScaleLabels(listOf(score)) {
+            Text("当前", style = MaterialTheme.typography.labelSmall, color = colors.primary, fontWeight = FontWeight.Medium)
+        }
+        val inactive = colors.secondaryContainer
+        val tickIdle = colors.outline
+        Canvas(Modifier.fillMaxWidth().height(20.dp)) {
+            val inset = scaleInset.toPx()
+            val y = size.height / 2
+            fun x(points: Int) = inset + (size.width - 2 * inset) * points / 100f
+            val line = 4.dp.toPx()
+            drawLine(inactive, Offset(x(0), y), Offset(x(100), y), strokeWidth = line, cap = StrokeCap.Round)
+            if (score > 0) drawLine(colors.primary, Offset(x(0), y), Offset(x(score), y), strokeWidth = line, cap = StrokeCap.Round)
+            ticks.forEach { (_, points) -> drawCircle(if (points <= score) colors.primary else tickIdle, 4.dp.toPx(), Offset(x(points), y)) }
+            drawCircle(colors.primary, 9.dp.toPx(), Offset(x(score), y))
+            drawCircle(colors.onPrimary, 3.5.dp.toPx(), Offset(x(score), y))
+        }
+        ScaleLabels(ticks.map { it.second }) {
+            ticks.forEach { (tier, points) ->
+                val here = tier == current
+                Text("${tierNames.getValue(tier)} $points", style = MaterialTheme.typography.labelSmall,
+                    color = if (here) colors.primary else colors.onSurfaceVariant,
+                    fontWeight = if (here) FontWeight.SemiBold else FontWeight.Normal)
+            }
+        }
+    }
+}
+
+/** 一行文字，每个按 [points]（0～100）对准刻度条上的位置居中，靠边时收在行内。 */
+@Composable
+private fun ScaleLabels(points: List<Int>, inset: Dp = scaleInset, content: @Composable () -> Unit) {
+    Layout(content, Modifier.fillMaxWidth()) { measurables, constraints ->
+        val placeables = measurables.map { it.measure(constraints.copy(minWidth = 0, minHeight = 0)) }
+        val width = constraints.maxWidth
+        val start = inset.roundToPx()
+        val track = width - 2 * start
+        layout(width, placeables.maxOfOrNull { it.height } ?: 0) {
+            placeables.forEachIndexed { index, placeable ->
+                val center = start + track * points[index] / 100f
+                placeable.placeRelative((center - placeable.width / 2f).roundToInt().coerceIn(0, maxOf(0, width - placeable.width)), 0)
+            }
         }
     }
 }

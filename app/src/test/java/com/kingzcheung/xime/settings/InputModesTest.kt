@@ -39,8 +39,9 @@ class InputModesTest {
     }
 
     @Test fun independentLanguageOrderKeepsTheRememberedInputMode() {
+        // 这是所有语言的排位（含未开启的），显示时 languageOrder(context) 再只留已开启的。
         val order = InputModes.languageOrder(listOf("en", "ja", "ja", "unknown"))
-        assertEquals(listOf(InputLanguage.ENGLISH, InputLanguage.JAPANESE, InputLanguage.CHINESE), order)
+        assertEquals(listOf(InputLanguage.ENGLISH, InputLanguage.JAPANESE, InputLanguage.CHINESE, InputLanguage.SPANISH), order)
         val choices = InputModes.languageChoices(modes, "rime_ice", mapOf(InputLanguage.JAPANESE to "japanese_kana"), order)
         assertEquals(listOf(InputModes.ENGLISH, "japanese_kana", "rime_ice"), choices.map { it.schemaId })
         assertEquals(listOf("rime_ice", "t9_pinyin"), InputModes.available(modes, InputModes.defaultModeOrder).take(2).map { it.schemaId })
@@ -48,9 +49,24 @@ class InputModesTest {
     }
 
     @Test fun japaneseComesAfterEnglishByDefaultAndWhenSwitchedOnLater() {
-        assertEquals(listOf(InputLanguage.CHINESE, InputLanguage.ENGLISH, InputLanguage.JAPANESE), InputModes.languageOrder(emptyList()))
+        assertEquals(listOf(InputLanguage.CHINESE, InputLanguage.ENGLISH, InputLanguage.JAPANESE, InputLanguage.SPANISH),
+            InputModes.languageOrder(emptyList()))
         // A saved order from older versions put Japanese before English; switching Japanese on moves it last.
-        assertEquals(listOf("zh", "en", "ja"), InputModes.orderWithLanguageLast(listOf("zh", "ja", "en"), InputLanguage.JAPANESE))
+        // 未开启的西班牙语只占排位，开启时会再排到最后。
+        assertEquals(listOf("zh", "en", "es", "ja"), InputModes.orderWithLanguageLast(listOf("zh", "ja", "en"), InputLanguage.JAPANESE))
+        // 西班牙语后开启，同样排到已开启语言后面。
+        assertEquals(listOf("zh", "en", "ja", "es"), InputModes.orderWithLanguageLast(listOf("zh", "en", "ja"), InputLanguage.SPANISH))
+    }
+
+    /** 没排过序时字母排列（Colemak、Cyletix10、Typewise、QWJRTK、自定义）排在其他方案后面，排过的不动。 */
+    @Test fun letterArrangementsGoLastUnlessTheUserOrderedThem() {
+        val ids = listOf("pinyin_colemak", "rime_ice", QwjrtkLayout.ID, "cyime_cangjie", "custom_pinyin_0123",
+            "t9_pinyin", "pinyin_typewise", "japanese_kana", "japanese")
+        val schemas = ids.map { SchemaInfo(it, it, "", "", "") }
+        assertEquals(listOf("rime_ice", "t9_pinyin", "japanese", "japanese_kana", InputModes.ENGLISH, "cyime_cangjie",
+            "pinyin_colemak", QwjrtkLayout.ID, "custom_pinyin_0123", "pinyin_typewise"),
+            InputModes.available(schemas, InputModes.defaultModeOrder).map { it.schemaId })
+        assertEquals(ids + InputModes.ENGLISH, InputModes.available(schemas, ids).map { it.schemaId })
     }
 
     @Test fun englishIsAvailableWithNoEnabledSchemas() {

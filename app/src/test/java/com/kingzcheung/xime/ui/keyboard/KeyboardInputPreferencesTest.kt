@@ -48,6 +48,30 @@ class KeyboardInputPreferencesTest {
         }
     }
 
+    @Test fun `uppercase key labels default off and persist without touching other settings`() {
+        val before = KeyboardInputPreferences.read(context)
+        assertEquals(false, before.uppercaseKeyLabels)
+        assertTrue(KeyboardInputPreferences.UPPERCASE_KEY_LABELS_KEY in KeyboardInputPreferences.watchedKeys)
+        for (enabled in listOf(true, false)) {
+            before.copy(uppercaseKeyLabels = enabled).save(context)
+            val after = KeyboardInputPreferences.read(context)
+            assertEquals(enabled, after.uppercaseKeyLabels)
+            assertEquals(before, after.copy(uppercaseKeyLabels = false))
+        }
+    }
+
+    @Test fun `chinese uppercase key labels default off and persist without touching other settings`() {
+        val before = KeyboardInputPreferences.read(context)
+        assertEquals(false, before.chineseUppercaseKeyLabels)
+        assertTrue(KeyboardInputPreferences.CHINESE_UPPERCASE_KEY_LABELS_KEY in KeyboardInputPreferences.watchedKeys)
+        for (enabled in listOf(true, false)) {
+            before.copy(chineseUppercaseKeyLabels = enabled).save(context)
+            val after = KeyboardInputPreferences.read(context)
+            assertEquals(enabled, after.chineseUppercaseKeyLabels)
+            assertEquals(before, after.copy(chineseUppercaseKeyLabels = false))
+        }
+    }
+
     @Test fun `symbol direction defaults to pulling into key and persists either habit`() {
         assertEquals(false, KeyboardInputPreferences.read(context).reverseSymbolSwipe)
         for (reversed in listOf(true, false)) {
@@ -82,6 +106,28 @@ class KeyboardInputPreferencesTest {
         assertEquals(listOf("glide_typing_v2", "glide_typing"), com.kingzcheung.xime.keyboard.ToolbarButton.GLIDE.gestureKeys())
     }
 
+    @Test fun `chinese glide has its own switch and an english glide user does not get it`() {
+        // 用户 10-31：老版本开着英文滑行，升级后中文 26 键不能跟着滑行。
+        values["glide_typing_v2"] = true
+        values["glide_typing"] = true
+        val upgraded = KeyboardInputPreferences.read(context)
+        assertEquals(true, upgraded.glideTyping)
+        assertEquals(false, upgraded.chineseGlideTyping)
+        upgraded.save(context)
+        assertEquals(false, KeyboardInputPreferences.read(context).chineseGlideTyping)
+        // 自己打开中文滑行后保持打开，英文滑行原样不动。
+        KeyboardInputPreferences.read(context).copy(chineseGlideTyping = true).save(context)
+        val chinese = KeyboardInputPreferences.read(context)
+        assertEquals(true, chinese.chineseGlideTyping)
+        assertEquals(true, chinese.glideTyping)
+        // 只开中文滑行时同样锁住键盘滑动移光标。
+        val onlyChinese = KeyboardInputPreferences(chineseGlideTyping = true)
+        assertEquals("已被「中文滑行输入」锁定", InputGestureLocks.lockFor(onlyChinese,
+            InputGestureLock.Option.CURSOR_GESTURE, CursorGestureMode.KEYBOARD)?.message)
+        // 手势预设不管中文滑行：开着它，「滑动」预设照样认得出。
+        assertEquals(InputGesturePreset.SWIPE, InputGesturePreset.of(InputGesturePreset.SWIPE.applyTo(onlyChinese)))
+    }
+
     @Test fun `comma and period keys are both on by default and the old saved period default does not turn it off`() {
         val fresh = KeyboardInputPreferences.read(context)
         assertEquals(true, fresh.qwertyCommaKey)
@@ -92,6 +138,40 @@ class KeyboardInputPreferencesTest {
         // 用户在新版自己关掉后保持关。
         KeyboardInputPreferences.read(context).copy(qwertyPeriodKey = false).save(context)
         assertEquals(false, KeyboardInputPreferences.read(context).qwertyPeriodKey)
+    }
+
+    @Test fun `time and date candidates are off by default and stay on once turned on`() {
+        // 更新不改原有习惯（用户 10-31）：新功能默认关，在 语言与方案 › 中文输出 打开。
+        assertEquals(false, KeyboardInputPreferences().datetimeCandidates)
+        assertEquals(false, KeyboardInputPreferences.read(context).datetimeCandidates)
+        KeyboardInputPreferences.read(context).copy(datetimeCandidates = false).save(context)
+        assertEquals(false, values[KeyboardInputPreferences.DATETIME_CANDIDATES_KEY])
+        assertEquals(false, KeyboardInputPreferences.read(context).datetimeCandidates)
+        KeyboardInputPreferences.read(context).copy(datetimeCandidates = true).save(context)
+        assertEquals(true, KeyboardInputPreferences.read(context).datetimeCandidates)
+    }
+
+    @Test fun `symbol name candidates are off by default and persist`() {
+        // 别人请求的功能默认关，不改原有习惯；在 语言与方案 › 中文输出 打开。
+        assertEquals(false, KeyboardInputPreferences().symbolNames)
+        assertEquals(false, KeyboardInputPreferences.read(context).symbolNames)
+        KeyboardInputPreferences.read(context).copy(symbolNames = true).save(context)
+        assertEquals(true, values[KeyboardInputPreferences.SYMBOL_NAMES_KEY])
+        assertEquals(true, KeyboardInputPreferences.read(context).symbolNames)
+        KeyboardInputPreferences.read(context).copy(symbolNames = false).save(context)
+        assertEquals(false, KeyboardInputPreferences.read(context).symbolNames)
+    }
+
+    @Test fun `bottom lift cursor is off by default and persists without touching the cursor gesture choice`() {
+        val before = KeyboardInputPreferences.read(context)
+        assertEquals(false, before.bottomLiftCursor)
+        for (enabled in listOf(true, false)) {
+            before.copy(bottomLiftCursor = enabled).save(context)
+            val after = KeyboardInputPreferences.read(context)
+            assertEquals(enabled, after.bottomLiftCursor)
+            assertEquals(before, after.copy(bottomLiftCursor = false))
+        }
+        assertTrue(KeyboardInputPreferences.BOTTOM_LIFT_CURSOR_KEY in KeyboardInputPreferences.watchedKeys)
     }
 
     @Test fun `every saved setting refreshes the keyboard already on screen`() {

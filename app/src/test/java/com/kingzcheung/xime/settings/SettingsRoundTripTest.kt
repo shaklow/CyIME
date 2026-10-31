@@ -28,13 +28,16 @@ class SettingsRoundTripTest {
     private val S = SettingsPreferences
     private val cases: List<Case<*>> = listOf(
         Case("底部圆角", true, false, S::setRoundedKeyboardBottom, S::roundedKeyboardBottom),
+        Case("顶部圆角", false, true, S::setRoundedKeyboardTop, S::roundedKeyboardTop),
         Case("数字框自动数字键盘", false, true, S::setAutoNumberKeyboardEnabled, S::isAutoNumberKeyboardEnabled),
         Case("分体键盘", true, false, S::setSplitKeyboardEnabled, S::isSplitKeyboardEnabled),
+        Case("右半边也放 G 键", true, false, S::setSplitRightGEnabled, S::isSplitRightGEnabled),
         Case("无痕", true, false, S::setIncognito, S::isIncognito),
         Case("候选注释", CandidateCommentMode.HIDE, CandidateCommentMode.SHOW, S::setCandidateCommentMode, S::candidateCommentMode),
         Case("候选注释内容", CandidateCommentContent.GLOSS, CandidateCommentContent.PINYIN,
             S::setCandidateCommentContent, S::candidateCommentContent),
         Case("候选栏取消按钮", true, false, S::setShowCandidateCancelButton, S::shouldShowCandidateCancelButton),
+        Case("联想时关闭键放右边", true, false, S::setAssociationCancelOnRight, S::isAssociationCancelOnRight),
         Case("编码显示位置", SettingsPreferences.INPUT_TEXT_CANDIDATE_BAR, SettingsPreferences.INPUT_TEXT_INPUT_BOX,
             S::setInputTextLocation, S::getInputTextLocation),
         Case("深浅色", 0, 1, S::setDarkMode, S::getDarkMode),
@@ -49,11 +52,13 @@ class SettingsRoundTripTest {
         Case("智能联想", false, true, S::setSmartPredictionEnabled, S::isSmartPredictionEnabled),
         Case("空格上屏后联想", false, true, S::setSpaceCommitAssociationEnabled, S::isSpaceCommitAssociationEnabled),
         Case("单字联想", true, false, S::setAssociationSingleMode, S::isSingleAssociationMode),
+        Case("退格直接删字", true, false, S::setDeleteSkipsAssociation, S::isDeleteSkipsAssociation),
         Case("上方角标提示", false, true, S::setSwipeUpHintsEnabled, S::isSwipeUpHintsEnabled),
         Case("下方角标提示", false, true, S::setSwipeDownHintsEnabled, S::isSwipeDownHintsEnabled),
         Case("点按弹出气泡", true, false, S::setShowPressBubble, S::shouldShowPressBubble),
         Case("每页候选词数", 35, 25, S::setPageSize, S::getPageSize),
         Case("候选字大小", 15, 21, S::setCandidateTextSize, S::getCandidateTextSize),
+        Case("候选词间距加宽", true, false, S::setWideCandidateSpacing, S::isWideCandidateSpacing),
         Case("短信验证码", true, false, S::setSmsCodeEnabled, S::isSmsCodeEnabled),
         Case("备份包含个人数据", true, false, BackupChoices::setIncludePersonal, BackupChoices::includePersonal),
     )
@@ -74,9 +79,9 @@ class SettingsRoundTripTest {
     @Test fun keyboardInputSettingsReadBackEveryField() {
         val changed = KeyboardInputPreferences().copy(
             spaceHold = SpaceHoldAction.VOICE_TOGGLE, cursorGesture = CursorGestureMode.KEYBOARD,
-            cursorHoldSeconds = 0.5f, languageMenuHoldSeconds = 0.3f, symbolKeyHoldSeconds = 1.5f, neighborCorrection = false,
+            cursorHoldSeconds = 0.5f, languageMenuHoldSeconds = 0.3f, symbolKeyHoldSeconds = 1.5f, candidateDragPercent = 30f, neighborCorrection = false,
             fourteenLetterSwipe = false, fourteenLetterSwipeDp = 30f, symbolInputMode = SymbolInputMode.LONG_PRESS,
-            reverseSymbolSwipe = true, kanaDirectionHints = true, flickDirectionDisc = false, glideTyping = true,
+            reverseSymbolSwipe = true, clearAllWhileComposing = true, kanaDirectionHints = true, flickDirectionDisc = false, glideTyping = true,
             t9FlickLetters = true, letterLongPressMenu = true, cursorStepDp = 14f, cursorSwipeLines = 1.75f, keyTextScale = 1.3f, handwritingPauseSeconds = 0.8f,
             formulaDelimiter = FormulaDelimiter.entries.last { it != FormulaDelimiter.DOLLAR }, fixedSymbols = "，\n。",
             qwertyStagger = QwertyStaggerMode.PHYSICAL, qwertyStaggerCustom = 0.25f,
@@ -89,6 +94,23 @@ class SettingsRoundTripTest {
             keyAnimationEnabled = changed.keyAnimationEnabled, showPressBubble = changed.showPressBubble,
             splitKeyboardEnabled = changed.splitKeyboardEnabled, splitGapPortrait = changed.splitGapPortrait,
             splitGapLandscape = changed.splitGapLandscape, sideSymbols = changed.sideSymbols))
+    }
+
+    /**
+     * 新装横竖屏都默认固定（用户 10-31），但用户自己切成悬浮后，下次弹出键盘、转回这个方向都还是悬浮，
+     * 位置、宽度、旋转角也原样；横竖屏各存一份，改一个方向不动另一个。
+     */
+    @Test fun floatingChoiceAndPositionStayPerOrientation() {
+        for (landscape in listOf(false, true)) assertEquals(false, S.isFloatingMode(context, landscape))
+        S.setFloatingMode(context, true, true)
+        S.setFloatingOffsetX(context, -37, true); S.setFloatingOffsetY(context, 120, true)
+        S.setFloatingWidthDp(context, 300, true); S.setFloatingRotation(context, 12f, true)
+        S.setFloatingOffsetX(context, 5, false); S.setFloatingOffsetY(context, 40, false)
+        assertEquals(listOf<Any>(true, -37, 120, 300, 12f), listOf<Any>(S.isFloatingMode(context, true),
+            S.getFloatingOffsetX(context, true), S.getFloatingOffsetY(context, true),
+            S.getFloatingWidthDp(context, true), S.getFloatingRotation(context, true)))
+        assertEquals(listOf<Any>(false, 5, 40, 0), listOf<Any>(S.isFloatingMode(context, false),
+            S.getFloatingOffsetX(context, false), S.getFloatingOffsetY(context, false), S.getFloatingWidthDp(context, false)))
     }
 
     /** 剪贴板同步页显示的插件 = 后台实际在用的插件：偏好不可用或没选时都是第一个已启用的。 */

@@ -48,4 +48,25 @@ class PerformanceProfileTest {
             assertEquals(it.toString(), preset.keyGlow, effects.glow)
         }
     }
+
+    @Test fun scoreRunsFromLowToFullAndTiersSitInOrder() {
+        val low = PerformanceProfile.presets.getValue(PerformanceTier.LOW)
+        val medium = PerformanceProfile.presets.getValue(PerformanceTier.MEDIUM)
+        val high = PerformanceProfile.presets.getValue(PerformanceTier.HIGH)
+        assertEquals(0, PerformanceProfile.score(low))
+        assertEquals(45, PerformanceProfile.score(medium))
+        assertEquals(88, PerformanceProfile.score(high))
+        assertEquals(100, PerformanceProfile.score(PerformanceSettings(true, true, 0, 0)))
+    }
+
+    @Test fun refinerKeptLongerThanTheWholeEngineDoesNotScoreMore() {
+        val low = PerformanceProfile.presets.getValue(PerformanceTier.LOW)
+        assertEquals(PerformanceProfile.score(low), PerformanceProfile.score(low.copy(speechRefinerIdleMinutes = 0)))
+    }
+
+    @Test fun offLevelValuesScoreLikeTheNearestSliderLevel() {
+        val medium = PerformanceProfile.presets.getValue(PerformanceTier.MEDIUM)
+        assertEquals(PerformanceProfile.idleLevelIndex(30), PerformanceProfile.idleLevelIndex(25))
+        assertEquals(PerformanceProfile.score(medium), PerformanceProfile.score(medium.copy(speechEngineIdleMinutes = 25)))
+    }
 }

@@ -31,6 +31,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchColors
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -39,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -61,6 +63,8 @@ import com.kingzcheung.xime.ui.keyboard.legibleForTheme
 @Composable
 fun SettingsSection(
     title: String,
+    /** 设置搜索跳转用的定位名；标题随界面语言翻译时传中文原名，搜索仍能找到这里。 */
+    searchKey: String = title,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Column {
@@ -76,7 +80,7 @@ fun SettingsSection(
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             shadowElevation = 0.dp
         ) {
-            Column(Modifier.settingsSearchAnchor(title)
+            Column(Modifier.settingsSearchAnchor(searchKey)
                 .visualMaterial(VisualStyles.current, 12.dp, level = com.kingzcheung.xime.ui.theme.MaterialLevel.RAISED), content = content)
         }
     }
@@ -145,10 +149,12 @@ fun SettingsItem(
     /** 右侧状态小字，如「已设置」「未连接」或当前主题名；[statusTone] 决定颜色。 */
     status: String? = null,
     statusTone: SettingsStatusTone = SettingsStatusTone.NEUTRAL,
+    /** 搜索定位和测试标签用的名字，见 [SettingsSection]。 */
+    searchKey: String = title,
 ) {
     Row(
         modifier = Modifier
-            .settingsSearchAnchor(title)
+            .settingsSearchAnchor(searchKey)
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .padding(16.dp),
@@ -185,7 +191,7 @@ fun SettingsItem(
         if (status != null) {
             Spacer(Modifier.width(12.dp))
             Text(status, style = MaterialTheme.typography.labelMedium, color = statusTone.color(),
-                maxLines = 1, modifier = Modifier.testTag("settings-status:$title"))
+                maxLines = 1, modifier = Modifier.testTag("settings-status:$searchKey"))
         }
         if (showArrow) {
             Icon(
@@ -221,11 +227,13 @@ fun SettingsToggleItem(
     showArrow: Boolean = false,
     /** 被别的设置锁住时的原因（如「已被『角标输入方式：长按』锁定」）：开关置灰不可点，并在说明下显示这句。 */
     lockMessage: String? = null,
+    /** 搜索定位用的名字，见 [SettingsSection]。 */
+    searchKey: String = title,
 ) {
     val locked = lockMessage != null
     Row(
         modifier = Modifier
-            .settingsSearchAnchor(title)
+            .settingsSearchAnchor(searchKey)
             .fillMaxWidth()
             .then(
                 if (locked) Modifier
@@ -277,10 +285,31 @@ fun SettingsToggleItem(
             checked = checked,
             onCheckedChange = onCheckedChange,
             enabled = !locked,
-            // Same Material on-primary thumb / primary track as the readable refinement switch.
-            colors = SwitchDefaults.colors()
+            colors = settingsSwitchColors()
         )
     }
+}
+
+/**
+ * 设置里所有可能不能拨的开关（英文始终开启、被别的设置锁住、条件不满足、正在保存）都用这套颜色：
+ * Material 默认「不能拨且开着」是灰底深色滑块，深色主题下看着像关着；「不能拨且关着」的底几乎透明，
+ * 深色主题下是一块近黑的槽，和旁边能拨的关着开关不像一类（10-31 走查「右半边也放 G 键」）。
+ * 这里两种都照能拨时的样子调淡：开着保留主题色，关着保留灰底、描边和滑块，一眼能分清开关状态，也能看出现在拨不动。
+ */
+@Composable
+internal fun settingsSwitchColors(): SwitchColors {
+    val scheme = MaterialTheme.colorScheme
+    fun faded(color: Color) = color.copy(alpha = 0.55f).compositeOver(scheme.surface)
+    return SwitchDefaults.colors(
+        disabledCheckedThumbColor = scheme.onPrimary,
+        disabledCheckedTrackColor = faded(scheme.primary),
+        disabledCheckedIconColor = faded(scheme.primary),
+        disabledCheckedBorderColor = Color.Transparent,
+        disabledUncheckedThumbColor = faded(scheme.outline),
+        disabledUncheckedTrackColor = faded(scheme.surfaceContainerHighest),
+        disabledUncheckedIconColor = faded(scheme.surfaceContainerHighest),
+        disabledUncheckedBorderColor = faded(scheme.outline),
+    )
 }
 
 /** 被锁住的设置下面那一行「已被…锁定」，各页统一样式。 */

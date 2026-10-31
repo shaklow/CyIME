@@ -334,6 +334,14 @@ data class BackgroundConfig(
     @SerialName("src_dark")
     val srcDark: String? = null,
     val fit: String? = null,
+    /** 图片在 [fit] 的基准大小上再放大的倍数（cover 至少 1，contain 可小于 1），未配置为 1。 */
+    val zoom: Float? = null,
+    /** 图片在可移动范围里的横向位置：0 左边对齐，1 右边对齐，未配置居中。 */
+    @SerialName("align_x")
+    val alignX: Float? = null,
+    /** 纵向位置：0 上边对齐，1 下边对齐，未配置居中。 */
+    @SerialName("align_y")
+    val alignY: Float? = null,
     /** 图片背景遮罩：半透明黑色覆盖层降低背景亮度（0~1，如 0.35 表示压暗 35%）。 */
     @SerialName("overlay_alpha")
     val overlayAlpha: Float? = null,
@@ -581,10 +589,10 @@ object KeysConfigHelper {
     private const val XIME_CONFIG_FILE = "xime.yaml"
     private const val XIME_CUSTOM_CONFIG_FILE = "xime.custom.yaml"
 
-    /** 九键左侧快捷符号栏内置默认值（T9KeyboardLayout 硬编码的历史行为）。 */
-    /** 与常用符号面板（commonSymbolsFor 中文）前 16 个相同；超过 4 个时侧栏可滑动。 */
-    val DEFAULT_T9_SIDE_SYMBOLS: List<String> = listOf("，", "。", "？", "！", "、", "：", "；", "…",
-        "“", "”", "‘", "’", "（", "）", "《", "》")
+    /** 九键左侧快捷符号栏内置默认值：最常用的中文标点，按使用频率排，括号只留一对（用户 10-31）。 */
+    /** 都取自常用符号面板（commonSymbolsFor 中文）；超过 4 个时侧栏可滑动。 */
+    val DEFAULT_T9_SIDE_SYMBOLS: List<String> = listOf("，", "。", "？", "！", "…", "～", "、", "：",
+        "“", "”", "；", "（", "）")
 
     /** 笔画键盘左侧符号列内置默认（与历史硬编码一致）。 */
     val DEFAULT_STROKE_SIDE_SYMBOLS: List<String> = listOf("。", "？", "！", "~")
@@ -725,7 +733,8 @@ object KeysConfigHelper {
         if (schemaId == _appliedLayoutSchemaId && section == _activeMergedSection) return
         _appliedLayoutSchemaId = schemaId
         _activeMergedSection = section
-        val custom = CustomKeyboardLayouts.find(schemaId)
+        // 自建布局的拼音方案，或双拼在自建合并键布局上的版本：按那个布局的键和手势。
+        val custom = CustomKeyboardLayouts.forSchema(schemaId)
         if (custom != null) {
             _zhRows = custom.typingRows()
             _keyGestureConfig.value = custom.gestures(_keyGestureConfigZhBase)
@@ -738,10 +747,32 @@ object KeysConfigHelper {
         } else {
             // Double pinyin and code tables type on the arrangement chosen for them (QWJRTK, Colemak, the user's own …); pinyin has none.
             val arranged = letterLayout(schemaId, false)
-            _zhRows = arranged?.typingRows() ?: _zhRowsBase
+            val rows = arranged?.typingRows() ?: _zhRowsBase
+            _zhRows = if (!semicolonOnShift && DoublePinyinSchemes.find(schemaId)?.usesSemicolon == true) withSemicolonKey(rows) else rows
             _keyGestureConfig.value = arranged?.gestures(_keyGestureConfigZhBase) ?: _keyGestureConfigZhBase
         }
     }
+
+    /**
+     * 「ing 放在 Shift 键上」（默认关，[com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.doublePinyinSemicolonOnShift]）：
+     * 开着时不补第二排的分号键，L 留在最右边，分号由打字中的 Shift 键送出（KeyboardLayout）。
+     */
+    @Volatile private var semicolonOnShift = false
+
+    /** 开关变了就重排当前键盘；没变什么都不做。 */
+    fun setSemicolonOnShift(on: Boolean) {
+        if (semicolonOnShift == on) return
+        semicolonOnShift = on
+        applyLetterLayouts()
+    }
+
+    /**
+     * ing 在分号上的双拼（微软双拼）：排列里没有分号键时在第二排末尾补一个，第二排正好排满十格；
+     * 排不下（第二排已满、蜂窝排列）就保持原样，换个带分号的排列再打。分号键按下时送进 Rime，由方案组成编码。
+     */
+    internal fun withSemicolonKey(rows: List<List<String>>): List<List<String>> =
+        if (rows.size != 3 || rows.any { ";" in it } || rows[1].sumOf { it.length } != 9) rows
+        else rows.mapIndexed { index, row -> if (index == 1) row + ";" else row }
 
     /**
      * The letter layout the keyboard is typing on: a Chinese layout schema, or the arrangement chosen
@@ -773,7 +804,9 @@ object KeysConfigHelper {
     fun previewKeyRows(layout: InputLayout, language: InputLanguage): List<List<String>> =
         CustomKeyboardLayouts.find(layout.id)?.typingRows() ?: when {
             layout.kind == LayoutKind.MERGED || layout.kind == LayoutKind.ZHUYIN -> _mergedRows[layout.id].orEmpty()
-            layout.kind == LayoutKind.ALPHABETIC -> if (language == InputLanguage.ENGLISH) _enRowsBase else _zhRowsBase
+            // 有自己排列的字母键盘（西班牙语多一个 ñ）按它自己的行画。
+            layout.kind == LayoutKind.ALPHABETIC -> _mergedRows[layout.id]
+                ?: if (language == InputLanguage.ENGLISH) _enRowsBase else _zhRowsBase
             else -> emptyList()
         }
     
@@ -813,11 +846,15 @@ object KeysConfigHelper {
     private var symbolCustomZh: Map<String, KeyGestureConfig> = emptyMap()
     private var symbolCustomEn: Map<String, KeyGestureConfig> = emptyMap()
     private var symbolOverridesK14: Map<String, String> = emptyMap()
+    /** 自建双字母布局各自的角标修改，按布局 id。 */
+    private var symbolOverridesCustom: Map<String, Map<String, String>> = emptyMap()
 
     private fun loadXimeConfig(context: Context) {
         try {
-            CustomKeyboardLayouts.load(context)
+            val customLayouts = CustomKeyboardLayouts.load(context)
             LetterLayouts.load(context)
+            semicolonOnShift = SettingsPreferences.getPrefsPublic(context).getBoolean(
+                com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.DOUBLE_PINYIN_SEMICOLON_ON_SHIFT_KEY, false)
             val symbolCustomText = readCustomText(context)
             symbolCustomZh = symbolCustomText?.let { parseKeyboardYamlSection(it, "qwerty") } ?: emptyMap()
             symbolCustomEn = symbolCustomText?.let { parseKeyboardYamlSection(it, "qwerty_en") } ?: emptyMap()
@@ -829,6 +866,8 @@ object KeysConfigHelper {
             // 英文26键有自己的半角预设，只用英文页的修改。
             symbolOverridesEn = QwertySwipeSymbols.load(context, true)
             symbolOverridesK14 = FourteenKeySymbols.load(context)
+            symbolOverridesCustom = customLayouts.filter(CustomLayoutSymbols::editable)
+                .associate { it.id to CustomLayoutSymbols.load(context, it) }
             // 键盘手势（从原始 YAML 手动解析）
             val parsed = parseKeyboardFromAssets(context)
             _keyGestureConfigZhBase = parsed?.first ?: emptyMap()
@@ -1701,6 +1740,19 @@ object KeysConfigHelper {
         }
     }
 
+    internal fun customLayoutSymbolEditorValues(context: Context, layout: CustomKeyboardLayout): Map<String, String> {
+        val overrides = CustomLayoutSymbols.load(context, layout)
+        val keys = CustomLayoutSymbols.keys(layout)
+        return buildMap {
+            for (key in keys) {
+                // 和键盘上一样：自建布局的手势表按旧位置填过 swipe，不算用户写的，只看预设和这里的修改。
+                val gesture = MergedKeySymbols.apply(keys, key, null, overrides)!!
+                put("up.$key", gesture.swipeUp!!.value)
+                put("down.$key", gesture.swipeDown!!.value)
+            }
+        }
+    }
+
     internal fun fourteenSymbolEditorValues(context: Context): Map<String, String> {
         val overrides = FourteenKeySymbols.load(context)
         val custom = _mergedGestureConfigs[InputLayout.MERGED14.id].orEmpty()
@@ -1713,6 +1765,13 @@ object KeysConfigHelper {
         }
     }
 
+    /**
+     * 西班牙语键盘：长按元音和 n 总是弹出 á é í ó ú ü ñ（打西语离不开重音），不受「长按弹出字母气泡」开关影响；
+     * 在它上面切到英文时照英文键盘的规则。
+     */
+    fun accentLongPress(isAsciiMode: Boolean): Boolean =
+        !isAsciiMode && InputLanguage.forSchema(_activeSchemaId) == InputLanguage.SPANISH
+
     /** 获取某个按键的手势配置。 */
     fun getKeyGesture(key: String): KeyGestureConfig? = getKeyGesture(key, false)
 
@@ -1721,7 +1780,9 @@ object KeysConfigHelper {
         val config = if (isAsciiMode) _keyGestureConfigEn.value else _keyGestureConfig.value
         val normalized = key.lowercase()
         val profile = InputProfiles.current(_activeSchemaId, isAsciiMode)
-        if (profile.language !in setOf(InputLanguage.CHINESE, InputLanguage.ENGLISH)) return config[normalized]
+        if (profile.language !in setOf(InputLanguage.CHINESE, InputLanguage.ENGLISH, InputLanguage.SPANISH)) return config[normalized]
+        // 西班牙语键盘用英文键盘的角标（同一位置同一个半角符号）；多出来的 ñ 键不在 26 格里，不带角标。
+        val english = isAsciiMode || profile.language == InputLanguage.SPANISH
         val custom = letterLayout(_activeSchemaId, isAsciiMode)
         // 所有字母布局的角标都由下面两条规则出，不再各布局各配一套（用户 10-30：模式太多难免疏忽，统一）。
         return when (profile.layout.kind) {
@@ -1731,8 +1792,8 @@ object KeysConfigHelper {
                 if (custom != null && normalized == ";" && custom.hasSemicolon())
                     return config[normalized]?.copy(swipeUp = null, swipeDown = null)
                 val owner = custom?.positionLetter(normalized) ?: normalized
-                QwertySwipeSymbols.apply(owner, config[normalized], if (isAsciiMode) symbolOverridesEn else symbolOverridesZh,
-                    (if (isAsciiMode) symbolCustomEn else symbolCustomZh)[owner], isAsciiMode)
+                QwertySwipeSymbols.apply(owner, config[normalized], if (english) symbolOverridesEn else symbolOverridesZh,
+                    (if (english) symbolCustomEn else symbolCustomZh)[owner], english)
             }
             // 合并键（14/17/18 键、自建双字母布局）：按键的读顺序用同一张表（MergedKeySymbols），14 键可在设置页改。
             // Shift 或分体把双字母键拆成单字母时，两个字母都沿用原来那个键的角标，符号位置不跟着变。
@@ -1745,7 +1806,9 @@ object KeysConfigHelper {
                 if (owner !in keys) return config[normalized]
                 // 自建布局的手势表按旧的位置填过 swipe，不算用户写的；内置 14/17/18 键只认 xime.custom.yaml 写的。
                 val configured = config[owner]?.let { if (custom != null) it.copy(swipeUp = null, swipeDown = null) else it }
-                val symbols = MergedKeySymbols.apply(keys, owner, configured, if (fourteen) symbolOverridesK14 else emptyMap())
+                // 14 键和自建布局在符号设置页改的；17/18 键没有设置页。
+                val overrides = if (fourteen) symbolOverridesK14 else custom?.let { symbolOverridesCustom[it.id] }.orEmpty()
+                val symbols = MergedKeySymbols.apply(keys, owner, configured, overrides)
                 if (owner == normalized) symbols
                 else (config[normalized] ?: KeyGestureConfig()).copy(swipeUp = symbols?.swipeUp, swipeDown = symbols?.swipeDown)
             }

@@ -202,7 +202,10 @@ fun SettingsScreen(
                 onBack = { navController.popBackStack() }
             )
         }
-        composable(SettingsRoutes.Performance) { PerformanceSettingsContent(onBack = { navController.popBackStack() }) }
+        composable(SettingsRoutes.Performance) {
+            PerformanceSettingsContent(onBack = { navController.popBackStack() },
+                onOpenSetupGuide = { navController.navigate(SettingsRoutes.SetupGuide) })
+        }
         composable(SettingsRoutes.KeyEffect) {
             KeyEffectSettingsContent(
                 onBack = { navController.popBackStack() }
@@ -256,8 +259,12 @@ fun SettingsScreen(
         composable(SettingsRoutes.ClipboardSync) {
             ClipboardSyncSettingsContent(
                 onBack = { navController.popBackStack() },
-                onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) }
+                onNavigateToPlugins = { navController.navigate(SettingsRoutes.Plugins) },
+                onNavigateToGroups = { navController.navigate(SettingsRoutes.ClipboardGroups) },
             )
+        }
+        composable(SettingsRoutes.ClipboardGroups) {
+            ClipboardGroupSettingsContent(onBack = { navController.popBackStack() })
         }
         composable(SettingsRoutes.KeyboardResize) {
             KeyboardPanelSettingsContent(com.kingzcheung.xime.keyboard.KeyboardPanelLaunch.Panel.RESIZE) { navController.popBackStack() }
@@ -273,13 +280,15 @@ fun SettingsScreen(
                 onBack = { navController.popBackStack() },
                 onNavigateToPrivacy = { navController.navigate(SettingsRoutes.Privacy) },
                 onNavigateToLicenses = { navController.navigate(SettingsRoutes.Licenses) },
+                onNavigateToCredits = { navController.navigate(SettingsRoutes.Credits) },
                 onNavigateToLogViewer = { navController.navigate(SettingsRoutes.LogViewer) },
                 onNavigateToHandwritingCapture = { navController.navigate(SettingsRoutes.HandwritingCapture) },
                 onNavigateToStorageSpace = { navController.navigate(SettingsRoutes.StorageSpace) }
             )
         }
         composable(SettingsRoutes.SetupGuide) {
-            SetupGuideScreen(firstRun = false, onDone = { navController.popBackStack() })
+            SetupGuideScreen(firstRun = false, onDone = { navController.popBackStack() },
+                onOpenPerformance = { navController.navigate(SettingsRoutes.Performance) })
         }
         composable(SettingsRoutes.StorageSpace) {
             StorageSpaceScreen(
@@ -317,6 +326,9 @@ fun SettingsScreen(
             LicensesContent(
                 onBack = { navController.popBackStack() }
             )
+        }
+        composable(SettingsRoutes.Credits) {
+            CreditsContent(onBack = { navController.popBackStack() })
         }
     }
 }

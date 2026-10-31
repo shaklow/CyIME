@@ -39,6 +39,13 @@ class SettingsSearchTest {
         assertEquals(pages, linked)
     }
 
+    /** 「时长与距离」默认收起：里面每一项搜到都要能让它自动展开（用户 10-31）。 */
+    @Test fun foldedTimingItemsExpandOnSearch() {
+        val folded = SettingsSearchIndex.filter { it.section == "时长与距离" }.map { it.title }
+        assertEquals(5, folded.size)
+        assertTrue("没登记自动展开：${folded - TIMING_SEARCH_KEYS}", TIMING_SEARCH_KEYS.containsAll(folded))
+    }
+
     /** 新设置树：每项只出现一处，路径都从首页五组之一开始。 */
     @Test fun everySettingLivesInOnePlaceUnderTheNewGroups() {
         val dup = SettingsSearchIndex.groupBy { it.title }.filterValues { it.size > 1 }.keys
@@ -63,6 +70,33 @@ class SettingsSearchTest {
         assertTrue("我的短语" in titles("快捷短语"))
         assertTrue("Ctrl + 空格" in titles("ctrl"))
         assertTrue("Ctrl + 空格" in titles("ＣＴＲＬ"))
+    }
+
+    /** 开着「繁体输出」搜设置：繁体字按简体找（10-31 新用户模拟里搜“十四鍵”什么都没找到）。 */
+    @Test fun traditionalCharactersFindSimplifiedSettings() {
+        assertEquals(titles("繁体输出"), titles("繁體輸出"))
+        assertTrue("繁体输出" in titles("繁體"))
+        assertEquals(titles("14键"), titles("十四鍵"))
+        assertTrue(titles("十四鍵").isNotEmpty())
+        assertTrue("剪贴板卡片最多显示" in titles("剪貼板"))
+    }
+
+    /** 「时间日期候选」按说法能搜到（用户 10-31 要的功能）。 */
+    @Test fun timeAndDateCandidatesAreSearchable() {
+        assertTrue("时间日期候选" in titles("当前时间"))
+        assertTrue("时间日期候选" in titles("日期"))
+    }
+
+    /** 「打符号名出符号」按符号名和说法能搜到。 */
+    @Test fun symbolNameCandidatesAreSearchable() {
+        assertTrue("打符号名出符号" in titles("加号"))
+        assertTrue("打符号名出符号" in titles("符号名"))
+    }
+
+    /** 14 键默认没启用：搜“14键”要能找到启用它的「已安装的方案」，不只是 14 键的手势设置。 */
+    @Test fun fourteenKeySearchFindsWhereToEnableIt() {
+        assertTrue("已安装的方案" in titles("14键"))
+        assertTrue("已安装的方案" in titles("启用14键"))
     }
 
     /** 词没有连着出现时按相邻两字近似匹配：“候选字号”“按键声音大小”这类自己组的说法。 */

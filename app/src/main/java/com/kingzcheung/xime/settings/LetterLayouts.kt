@@ -12,7 +12,8 @@ import androidx.compose.runtime.setValue
  * offers (QWJRTK, Cyletix10, Colemak and the user's own), and rows, names, swipe positions and
  * moved-letter colours all come from that same [CustomKeyboardLayout]. Layouts with merged keys are
  * left out: a two-letter key cannot type one letter directly, and romaji and double pinyin have no
- * decoder that splits it (double pinyin types merged keys on its 14-key versions instead).
+ * decoder that splits it (double pinyin types merged keys on its 14-key versions and on its versions
+ * generated for each merged custom layout, see DoublePinyinSchemes.isOnLayout).
  */
 object LetterLayouts {
     private const val PREFIX = "letter_layout_"
@@ -23,8 +24,9 @@ object LetterLayouts {
             language == InputLanguage.JAPANESE && scheme == InputScheme.ROMAJI ||
             language == InputLanguage.CHINESE && scheme in LETTER_CODED_CHINESE
 
-    /** Chinese schemes typed letter by letter on 26 keys besides pinyin: double pinyin and code tables (五笔、音形等导入的码表). */
-    private val LETTER_CODED_CHINESE = setOf(InputScheme.DOUBLE_PINYIN, InputScheme.WUBI, InputScheme.WUBI_PINYIN, InputScheme.EXTERNAL)
+    /** Chinese schemes typed letter by letter on 26 keys besides pinyin: double pinyin and code tables (五笔、仓颉、音形等导入的码表). */
+    private val LETTER_CODED_CHINESE = setOf(InputScheme.DOUBLE_PINYIN, InputScheme.WUBI, InputScheme.WUBI_PINYIN,
+        InputScheme.CANGJIE, InputScheme.EXTERNAL)
 
     fun typable(layout: CustomKeyboardLayout): Boolean = layout.mergedGroups.isEmpty()
 

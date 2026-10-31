@@ -143,10 +143,91 @@ class DoublePinyinSchemeTest {
         else set.map { apply(listOf(rule), it) }.filter { it.isNotEmpty() }.toSet()
     }
 
+    /** 模糊音（[SpellingPatches.Fuzzy]）写在双拼拼写规则前面：先按读音派生，再换成本方案的双拼编码。 */
+    @Test fun fuzzyPinyinReachesEveryDoublePinyinScheme() {
+        for (scheme in DoublePinyinScheme.BUILTINS + custom) {
+            fun typed(fuzzy: SpellingPatches.Fuzzy, syllable: String) = spellings(fuzzy.rules + scheme.algebra(), syllable)
+            fun code(syllable: String) = scheme.code(syllable)!!
+            assertTrue(scheme.id, code("xin") in typed(SpellingPatches.Fuzzy.IN, "xing"))
+            assertTrue(scheme.id, code("xing") in typed(SpellingPatches.Fuzzy.IN, "xin"))
+            assertTrue(scheme.id, code("yin") in typed(SpellingPatches.Fuzzy.IN, "ying"))
+            assertTrue(scheme.id, code("zi") in typed(SpellingPatches.Fuzzy.Z, "zhi"))
+            assertTrue(scheme.id, code("shi") in typed(SpellingPatches.Fuzzy.S, "si"))
+            assertTrue(scheme.id, code("lan") in typed(SpellingPatches.Fuzzy.NL, "nan"))
+            assertTrue(scheme.id, code("fan") in typed(SpellingPatches.Fuzzy.AN, "fang"))
+            assertFalse(scheme.id, code("xian") in typed(SpellingPatches.Fuzzy.AN, "xiang"))
+            // 用户 10-31：小鹤 bkgr（bing guan）要出宾馆（bin guan）；en/eng 两个方向同样。
+            assertTrue(scheme.id, code("bing") in typed(SpellingPatches.Fuzzy.IN, "bin"))
+            assertTrue(scheme.id, code("chen") in typed(SpellingPatches.Fuzzy.EN, "cheng"))
+            assertTrue(scheme.id, code("cheng") in typed(SpellingPatches.Fuzzy.EN, "chen"))
+            // 不开模糊音：每个音节只有自己的编码。
+            assertEquals(scheme.id, setOf(code("xing")), spellings(scheme.algebra(), "xing"))
+            // 11 组全开：每个音节派生出的拼写仍然都是两键编码，不多出没换成双拼的长拼写。
+            val all = SpellingPatches.Fuzzy.entries.flatMap { it.rules } + scheme.algebra()
+            for (syllable in DoublePinyinScheme.SYLLABLES) {
+                val odd = spellings(all, syllable).filterNot { it.matches(Regex("[a-z;]{2}")) }
+                assertTrue("${scheme.id} $syllable $odd", odd.isEmpty())
+            }
+        }
+    }
+
+    /** 随应用内置的 26 键小鹤双拼（雾凇 double_pinyin_flypy.schema.yaml）的拼写规则原文，不是由键位表生成的那份。 */
+    private val shippedFlypy = """
+        erase/^xx$/
+        derive/^([jqxy])u$/$1v/
+        derive/^([aoe])([ioun])$/$1$1$2/
+        xform/^([aoe])(ng)?$/$1$1$2/
+        xform/iu$/Ⓠ/
+        xform/(.)ei$/$1Ⓦ/
+        xform/uan$/Ⓡ/
+        xform/[uv]e$/Ⓣ/
+        xform/un$/Ⓨ/
+        xform/^sh/Ⓤ/
+        xform/^ch/Ⓘ/
+        xform/^zh/Ⓥ/
+        xform/uo$/Ⓞ/
+        xform/ie$/Ⓟ/
+        xform/(.)i?ong$/$1Ⓢ/
+        xform/ing$|uai$/Ⓚ/
+        xform/(.)ai$/$1Ⓓ/
+        xform/(.)en$/$1Ⓕ/
+        xform/(.)eng$/$1Ⓖ/
+        xform/[iu]ang$/Ⓛ/
+        xform/(.)ang$/$1Ⓗ/
+        xform/ian$/Ⓜ/
+        xform/(.)an$/$1Ⓙ/
+        xform/(.)ou$/$1Ⓩ/
+        xform/[iu]a$/Ⓧ/
+        xform/iao$/Ⓝ/
+        xform/(.)ao$/$1Ⓒ/
+        xform/ui$/Ⓥ/
+        xform/in$/Ⓑ/
+        xlit/ⓆⓌⓇⓉⓎⓊⒾⓄⓅⓈⒹⒻⒼⒽⒿⓀⓁⓏⓍⒸⓋⒷⓃⓂ/qwrtyuiopsdfghjklzxcvbnm/
+    """.trimIndent().lines()
+
+    /** 用户 10-31：小鹤双拼打 bkgr 出不来宾馆。打开 in/ing 模糊音（并打开「模糊音也用于双拼」）后，宾 bin 也能按 bk 打。 */
+    @Test fun shippedFlypyTypesBinguanAsBkgrWithInIngFuzzy() {
+        assertEquals(setOf("bb"), spellings(shippedFlypy, "bin"))
+        assertEquals(setOf("gr"), spellings(shippedFlypy, "guan"))
+        assertEquals(setOf("bb", "bk"), spellings(SpellingPatches.Fuzzy.IN.rules + shippedFlypy, "bin"))
+        // 11 组全开时同样，每个音节仍然只派生出两键编码。
+        val all = SpellingPatches.Fuzzy.entries.flatMap { it.rules } + shippedFlypy
+        assertTrue("bk" in spellings(all, "bin") && "gr" in spellings(all, "guan"))
+        assertTrue(DoublePinyinScheme.FLYPY.code("cheng") in spellings(all, "chen"))
+        for (syllable in DoublePinyinScheme.SYLLABLES) {
+            val odd = spellings(all, syllable).filterNot { it.matches(Regex("[a-z]{2}")) }
+            assertTrue("$syllable $odd", odd.isEmpty())
+        }
+        // 键位表上的编码内置规则都能打（内置的另外多出 jv、ew 这类写法）。
+        for (syllable in DoublePinyinScheme.SYLLABLES)
+            assertTrue(syllable, DoublePinyinScheme.FLYPY.code(syllable) in spellings(shippedFlypy, syllable))
+    }
+
     @Test fun t9VersionTypesEachSyllableOnTwoDigitKeys() {
         val digits = mapOf("abc" to '2', "def" to '3', "ghi" to '4', "jkl" to '5', "mno" to '6', "pqrs" to '7', "tuv" to '8', "wxyz" to '9')
         fun t9(code: String) = code.map { c -> digits.entries.first { c in it.key }.value }.joinToString("")
-        for (scheme in DoublePinyinScheme.BUILTINS + custom) {
+        // 九键没有分号键，微软双拼没有九键版本。
+        for (scheme in DoublePinyinScheme.BUILTINS.filterNot { it.usesSemicolon } + custom) {
             val id = DoublePinyinScheme.t9Id(scheme.id)
             val text = scheme.t9Schema()
             assertTrue(text.startsWith(DoublePinyinScheme.GENERATED_MARK + id + "\n"))
@@ -275,6 +356,40 @@ class DoublePinyinSchemeTest {
             xform/in$/L/
             xlit/QWRTYUIOPSDFGHMJCKLZXVBN/qwrtyuiopsdfghmjcklzxvbn/
         """,
+        DoublePinyinScheme.MICROSOFT to """
+            erase/^xx$/
+            derive/^([jqxy])u$/$1v/
+            derive/^([aoe].*)$/o$1/
+            xform/^([ae])(.*)$/$1$1$2/
+            xform/iu$/Q/
+            xform/[iu]a$/W/
+            xform/er$|[uv]an$/R/
+            xform/[uv]e$/T/
+            xform/v$|uai$/Y/
+            xform/^sh/U/
+            xform/^ch/I/
+            xform/^zh/V/
+            xform/uo$/O/
+            xform/[uv]n$/P/
+            xform/i?ong$/S/
+            xform/[iu]ang$/D/
+            xform/(.)en$/$1F/
+            xform/(.)eng$/$1G/
+            xform/(.)ang$/$1H/
+            xform/ian$/M/
+            xform/(.)an$/$1J/
+            xform/iao$/C/
+            xform/(.)ao$/$1K/
+            xform/(.)ai$/$1L/
+            xform/(.)ei$/$1Z/
+            xform/ie$/X/
+            xform/ui$/V/
+            derive/T$/V/
+            xform/(.)ou$/$1B/
+            xform/in$/N/
+            xform/ing$/;/
+            xlit/QWRTYUIOPSDFGHMJCKLZXVBN/qwrtyuiopsdfghmjcklzxvbn/
+        """,
     ).mapValues { (_, rules) -> rules.trimIndent().lines().filter { it.isNotBlank() } }
 
     @Test fun builtinsTypeWhatTheOfficialRimeSchemesType() {
@@ -291,6 +406,32 @@ class DoublePinyinSchemeTest {
         assertEquals("ud'pn", z.preview())
         assertEquals(listOf("oa", "ol", "or"), listOf("a", "ai", "er").map { DoublePinyinScheme.ZNABC.code(it) })
         assertEquals(listOf("as", "eq", "op"), listOf("ai", "er", "ou").map { DoublePinyinScheme.JIAJIA.code(it) })
+        val m = DoublePinyinScheme.MICROSOFT
+        assertTrue(m.usesSemicolon)
+        assertFalse(DoublePinyinScheme.BUILTINS.filter { it != m }.any { it.usesSemicolon })
+        assertEquals(listOf("l;", "x;", "ud", "vs", "ly", "lt", "iy", "ol", "or", "ob"),
+            listOf("ling", "xing", "shuang", "zhong", "lv", "lve", "chuai", "ai", "er", "ou").map { m.code(it) })
+        assertEquals("ud'pn", m.preview())
+        assertEquals(setOf("ing"), m.keyLabels().getValue(';').second.toSet())
+    }
+
+    @Test fun microsoftPreeditAndSchemaTakeTheSemicolon() {
+        val m = DoublePinyinScheme.MICROSOFT
+        val rules = m.preeditFormat()
+        assertEquals("ling xing", apply(rules, "l;x;"))
+        assertEquals("shuang'pin", apply(rules, "ud'pn"))
+        assertEquals("ai er ou", apply(rules, "ol or ob"))
+        assertEquals("zhong sh", apply(rules, "vsu"))
+        // 分号进字母表（引号里的也认），不进 initials；其他方案的字母表不变。
+        val base = "schema:\n  schema_id: double_pinyin_flypy\n  name: 小鹤双拼\n  description: |\n    x\n" +
+            "translator:\n  prism: double_pinyin_flypy\n  preedit_format:\n    - xform/a/b/\n" +
+            "speller:\n  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`  # 注释\n" +
+            "  initials: zyxwvutsrqponmlkjihgfedcba\n  algebra:\n    - erase/^xx$/\n"
+        val text = m.schema(base)
+        assertTrue(text.contains("  alphabet: zyxwvutsrqponmlkjihgfedcbaZYXWVUTSRQPONMLKJIHGFEDCBA`;  # 注释\n"))
+        assertTrue(text.contains("  initials: zyxwvutsrqponmlkjihgfedcba\n"))
+        assertTrue(m.schema(base.replace("alphabet: zyx", "alphabet: \"zyx").replace("`  #", "`\"  #")).contains("A`;\"  #"))
+        assertTrue(DoublePinyinScheme.ZIRANMA.schema(base).contains("A`  # 注释\n"))
     }
 
     @Test fun builtinPreeditShowsPinyin() {
@@ -309,7 +450,7 @@ class DoublePinyinSchemeTest {
         val groups = mapOf("qw" to 'Q', "er" to 'E', "ty" to 'T', "ui" to 'U', "op" to 'O', "as" to 'A', "df" to 'D',
             "gh" to 'G', "jk" to 'J', "zx" to 'Z', "cv" to 'C', "bn" to 'B')
         fun merged(c: Char) = groups.entries.firstOrNull { c in it.key }?.value ?: c
-        for (scheme in DoublePinyinScheme.BUILTINS.drop(1) + custom) {
+        for (scheme in DoublePinyinScheme.BUILTINS.drop(1).filterNot { it.usesSemicolon } + custom) {
             val id = DoublePinyinScheme.k14Id(scheme.id)
             val text = scheme.k14Schema(base14)
             assertTrue(text.startsWith(DoublePinyinScheme.GENERATED_MARK + id + "\n"))
@@ -335,6 +476,58 @@ class DoublePinyinSchemeTest {
         }
         // 自然码 zhong = VS：点 CV 键、AS 键，或侧滑出 V、S。
         assertEquals("CA", DoublePinyinScheme.ZIRANMA.code("zhong")!!.map(::merged).joinToString(""))
+    }
+
+    /** 自己排的 20 键（we、yu、op、as、jk、cv 合并）上的双拼：每一位都可以点合并键（送键上第一个字母）或长按选精确字母。 */
+    @Test fun layoutVersionTypesEachKeyExactlyOrMerged() {
+        val base = """
+            schema:
+              schema_id: double_pinyin_flypy
+              name: 小鹤双拼
+              description: |
+                雾凇拼音 - 小鹤双拼
+
+            translator:
+              dictionary: rime_ice
+              prism: double_pinyin_flypy    # 注释
+              enable_correction: true
+              cyime_neighbor_correction: true
+              preedit_format:
+                - xform/(\w)g/${'$'}1eng/
+
+            speller:
+              alphabet: zyxwvutsrqponmlkjihgfedcba
+              algebra:
+                - erase/^xx${'$'}/
+            """.trimIndent() + "\n"
+        val groups = listOf("q", "we", "r", "t", "yu", "i", "op", "as", "d", "f", "g", "h", "jk", "l", "z", "x", "cv", "b", "n", "m")
+        fun merged(c: Char) = groups.first { c in it }[0]
+        val layout = "custom_pinyin_" + "2".repeat(32)
+        for (scheme in DoublePinyinScheme.BUILTINS.drop(1).filterNot { it.usesSemicolon } + custom) {
+            val id = DoublePinyinScheme.layoutVariantId(scheme.id, layout)
+            assertEquals(scheme.id to layout, DoublePinyinScheme.splitLayoutVariant(id))
+            val text = scheme.layoutSchema(scheme.schema(base), id, "二十键", groups)
+            assertTrue(text.startsWith(DoublePinyinScheme.GENERATED_MARK + id + "\n"))
+            assertEquals(1, text.lines().count { it.startsWith(DoublePinyinScheme.GENERATED_MARK) })
+            assertTrue(text.contains("  schema_id: $id\n  language: zh\n  input_scheme: double_pinyin\n"))
+            // 名称和 26 键双拼相同：方案栏里同一个方案，换布局时保持。
+            assertTrue(text.contains("  name: ${org.json.JSONObject.quote(scheme.name)}\n"))
+            assertTrue(text.contains("自建布局「二十键」"))
+            assertTrue(text.contains("  prism: $id\n  spelling_hints: 8\n  always_show_comments: true\n"))
+            // 代表字母是小写，26 键的编码显示会把它显示成别的音节；临键纠错按 26 键位置算，合并键上不开。
+            assertTrue(text.contains("  preedit_format: []\n"))
+            assertFalse(text.contains("enable_correction") || text.contains("cyime_neighbor_correction"))
+            val rules = text.substringAfter("  algebra:\n").lines().takeWhile { it.startsWith("    - ") }
+                .map { it.removePrefix("    - \"").removeSuffix("\"").replace("\\\"", "\"").replace("\\\\", "\\") }
+            assertEquals(scheme.algebra() + listOf(0, 1).flatMap { p -> groups.filter { it.length == 2 }.map { "derive/^(.{$p})[${it[1]}](.*)$/\$1${it[0]}\$2/" } }, rules)
+            for (syllable in DoublePinyinScheme.SYLLABLES) {
+                val code = scheme.code(syllable)!!
+                val expected = setOf(code, "${merged(code[0])}${code[1]}", "${code[0]}${merged(code[1])}", "${merged(code[0])}${merged(code[1])}")
+                assertEquals(syllable, expected, spellings(rules, syllable))
+            }
+        }
+        assertEquals(null, DoublePinyinScheme.splitLayoutVariant(DoublePinyinScheme.k14Id(DoublePinyinScheme.ZIRANMA_ID)))
+        assertEquals(null, DoublePinyinScheme.splitLayoutVariant("custom_pinyin_" + "2".repeat(32)))
     }
 
     @Test fun flypyFourteenKeyAssetMatchesTheGeneratedRules() {

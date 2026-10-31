@@ -35,7 +35,7 @@ internal fun OfflineModelCard() {
     val models by ModelManager.modelsFlow.collectAsState()
     val downloads by ModelManager.downloadStates.collectAsState()
     val selected = remember { mutableStateMapOf<InputLanguage, String>().apply {
-        InputLanguage.supported.forEach { put(it, manager.getSelectedModelId(it)) }
+        InputLanguage.speech.forEach { put(it, manager.getSelectedModelId(it)) }
     } }
     var editing by remember { mutableStateOf<InputLanguage?>(null) }
     var ready by remember { mutableStateOf(emptySet<String>()) }
@@ -47,7 +47,7 @@ internal fun OfflineModelCard() {
         }
         xasrReady = withContext(Dispatchers.IO) { runCatching { manager.isXasrReady() }.getOrDefault(false) }
         // An unchosen SenseVoice default becomes Paraformer + SenseVoice once Paraformer is downloaded.
-        InputLanguage.supported.forEach { selected[it] = withContext(Dispatchers.IO) { manager.getSelectedModelId(it) } }
+        InputLanguage.speech.forEach { selected[it] = withContext(Dispatchers.IO) { manager.getSelectedModelId(it) } }
     }
     fun refresh(language: InputLanguage) { selected[language] = manager.getSelectedModelId(language) }
     fun download(id: String) { ModelManager.getModel(id)?.let { ModelManager.downloadModelInBackground(context, it) } }
@@ -58,7 +58,7 @@ internal fun OfflineModelCard() {
         chinese = language == InputLanguage.CHINESE, wholeSentenceOn = wholeSentence, xasrReady = xasrReady)
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
         SettingsSection(title = "语言 → 主模型") {
-            InputLanguage.supported.forEachIndexed { index, language ->
+            InputLanguage.speech.forEachIndexed { index, language ->
                 val mode = selected.getValue(language)
                 val primary = SpeechModelSelection.primary(mode)
                 if (index > 0) HorizontalDivider(Modifier.padding(horizontal = 16.dp),
@@ -107,7 +107,7 @@ internal fun OfflineModelCard() {
                                 else -> "停顿后由 SenseVoice 复核主模型结果，会增加内存占用和等待时间。"
                             }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Switch(checked = enabled, enabled = available, onCheckedChange = null)
+                        Switch(checked = enabled, enabled = available, onCheckedChange = null, colors = settingsSwitchColors())
                     }
                 }
                 // 整句定稿只对中文生效：中文开着校正，或中文直接用 SenseVoice 时可用（英文的校正不受它影响）。
@@ -125,26 +125,66 @@ internal fun OfflineModelCard() {
                     Column(Modifier.weight(1f)) {
                         Text("整句定稿", style = MaterialTheme.typography.bodyLarge)
                         Text(when {
-                            chineseCorrection -> "中文说完一整句（停顿约 1 秒或点结束）再统一校正一次，保留标点，更准，说完要多等一会儿；关闭时每 6 秒校正一次。只对中文生效。"
-                            senseVoiceChinese -> "中文用 SenseVoice 时保留标点，说完（点结束）把整段再识别一次，更准，说完要多等一会儿。只对中文生效。"
+                            chineseCorrection -> "中文说完一整句（停顿约 1 秒或点结束）再统一校正一次，更准，说完要多等一会儿；关闭时每 6 秒校正一次。只对中文生效。"
+                            senseVoiceChinese -> "中文用 SenseVoice 时，说完（点结束）把整段再识别一次，更准，说完要多等一会儿。只对中文生效。"
                             else -> "只对中文生效：先为中文开启上面的 SenseVoice 二次校正。"
                         },
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         // 定稿模型写的是实际在用的那个：同一个 pipeline()，与上面主模型一行一致。
                         val finalizerNote = when {
                             pipeline(InputLanguage.CHINESE).finalizer == SpeechModelCatalog.XASR -> "中文整句定稿使用 X-ASR 模型。"
-                            chineseCorrection && xasrReady -> "X-ASR 已下载；打开整句定稿后中文改用它定稿。"
-                            chineseCorrection -> "中文整句定稿使用 SenseVoice；下载 X-ASR 模型（约 136 MB）后改用它，更准、更快。"
-                            senseVoiceChinese -> "中文整句定稿使用 SenseVoice。X-ASR 只在中文主模型是 Paraformer 或 Zipformer、并开着二次校正时使用" +
-                                if (xasrReady) "，已下载的 X-ASR 现在不用。" else "。"
+                            wholeSentenceAvailable && xasrReady -> "X-ASR 已下载；打开整句定稿后中文改用它定稿。"
+                            wholeSentenceAvailable -> "中文整句定稿使用 SenseVoice；下载 X-ASR 模型（约 136 MB）后改用它，更准、更快。"
                             else -> null
                         }
                         if (finalizerNote != null) Text(finalizerNote,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Switch(checked = wholeSentence, enabled = wholeSentenceAvailable, onCheckedChange = null)
+                    Switch(checked = wholeSentence, enabled = wholeSentenceAvailable, onCheckedChange = null,
+                        colors = settingsSwitchColors())
                 }
-                if (chineseCorrection && !xasrReady) {
+                // 自动加标点和整句定稿分开：关掉标点照样整句定稿（默认关，和 1.15.0 以前一样不自动加标点）。
+                val autoPunctuationAvailable = wholeSentenceAvailable && wholeSentence
+                var autoPunctuation by remember { mutableStateOf(SettingsPreferences.isSttAutoPunctuation(context)) }
+                HorizontalDivider(modifier = Modifier.padding(start = 16.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Row(Modifier.fillMaxWidth().settingsSearchAnchor("自动加标点").testTag("speech-auto-punctuation")
+                    .toggleable(value = autoPunctuation, enabled = autoPunctuationAvailable, role = Role.Switch,
+                        onValueChange = { autoPunctuation = it; SettingsPreferences.setSttAutoPunctuation(context, it) })
+                    .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动加标点", style = MaterialTheme.typography.bodyLarge)
+                        Text(if (autoPunctuationAvailable) "保留模型打的逗号、句号、问号；关闭时停顿处留空格。说「逗号」「句号」「问号」「感叹号」始终出标点。"
+                            else "只在整句定稿开着时可用；现在停顿处留空格，说「逗号」「句号」「问号」「感叹号」出标点。",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = autoPunctuation, enabled = autoPunctuationAvailable, onCheckedChange = null,
+                        colors = settingsSwitchColors())
+                }
+                // 只带一部分标点：自动加标点开着时逐项一行开关，默认全开；关掉的那类在停顿处留空格。
+                if (autoPunctuationAvailable && autoPunctuation) listOf(
+                    Triple("逗号、顿号、分号", SettingsPreferences::isSttPunctuationComma, SettingsPreferences::setSttPunctuationComma),
+                    Triple("句号", SettingsPreferences::isSttPunctuationPeriod, SettingsPreferences::setSttPunctuationPeriod),
+                    Triple("问号、感叹号", SettingsPreferences::isSttPunctuationQuestion, SettingsPreferences::setSttPunctuationQuestion),
+                ).forEach { (title, read, write) ->
+                    var kept by remember(title) { mutableStateOf(read(context)) }
+                    HorizontalDivider(modifier = Modifier.padding(start = 32.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Row(Modifier.fillMaxWidth().testTag("speech-auto-punctuation:$title")
+                        .toggleable(value = kept, role = Role.Switch, onValueChange = { kept = it; write(context, it) })
+                        .padding(start = 32.dp, top = 12.dp, end = 16.dp, bottom = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(title, style = MaterialTheme.typography.bodyLarge)
+                            Text(if (kept) "保留模型打的$title。" else "不带$title，停顿处留空格；口述照样出。",
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = kept, onCheckedChange = null, colors = settingsSwitchColors())
+                    }
+                }
+                // 整句定稿能用的地方（含只用 SenseVoice 的中文）都能接 X-ASR，下载入口跟着整句定稿走。
+                if (wholeSentenceAvailable && !xasrReady) {
                     ModelDownloadAction(SpeechModelCatalog.XASR, downloads) { download(SpeechModelCatalog.XASR) }
                 }
                 if (!senseReady) {
@@ -152,8 +192,6 @@ internal fun OfflineModelCard() {
                 }
             }
         }
-        Text("同一模型只存一份；运行时只保留当前主模型及可选校正，不同时加载三种语言。模型文件大小不等于运行内存。",
-            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("配置修改在下一次录音生效。录音中切换语言时，兼容同一模型就继续使用，否则保留已识别文字并切换模型，麦克风继续收音。",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }

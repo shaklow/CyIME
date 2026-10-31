@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -43,10 +44,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.composed
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
@@ -72,8 +76,33 @@ internal val FloatingKeyboardCardShape = RoundedCornerShape(FloatingKeyboardCard
 internal val FixedKeyboardCardShape = RoundedCornerShape(
     topStart = FloatingKeyboardCardCorner, topEnd = FloatingKeyboardCardCorner,
 )
-internal fun keyboardPanelShape(isFloating: Boolean, roundedBottom: Boolean = false) =
-    if (isFloating || roundedBottom) FloatingKeyboardCardShape else FixedKeyboardCardShape
+/** 固定键盘顶部圆角关掉、底部圆角开着时，只有底部两角圆。 */
+private val FixedKeyboardBottomRoundedShape = RoundedCornerShape(
+    bottomStart = FloatingKeyboardCardCorner, bottomEnd = FloatingKeyboardCardCorner,
+)
+internal fun keyboardPanelShape(isFloating: Boolean, roundedBottom: Boolean = false, roundedTop: Boolean = true) = when {
+    isFloating || roundedTop && roundedBottom -> FloatingKeyboardCardShape
+    roundedTop -> FixedKeyboardCardShape
+    roundedBottom -> FixedKeyboardBottomRoundedShape
+    else -> RectangleShape
+}
+
+/**
+ * 「填满留空处」时固定卡片和两侧拼成一整条键盘：圆角只留在整条的外角上（贴着屏幕边的那几个角），
+ * 卡片和两侧相接的角是直角，否则两侧在卡片圆角那里露出一个台阶（2026-10-31 平板截图）。
+ * 卡片铺满整宽或贴着一边时，贴边那侧照顶部/底部圆角设置。
+ */
+internal fun filledSidesCardShape(touchesLeft: Boolean, touchesRight: Boolean, roundedTop: Boolean, roundedBottom: Boolean) =
+    if (touchesLeft && touchesRight) keyboardPanelShape(false, roundedBottom, roundedTop)
+    else RoundedCornerShape(
+        topStart = if (roundedTop && touchesLeft) FloatingKeyboardCardCorner else 0.dp,
+        topEnd = if (roundedTop && touchesRight) FloatingKeyboardCardCorner else 0.dp,
+        bottomEnd = if (roundedBottom && touchesRight) FloatingKeyboardCardCorner else 0.dp,
+        bottomStart = if (roundedBottom && touchesLeft) FloatingKeyboardCardCorner else 0.dp,
+    )
+
+/** 键盘卡片顶部两角的圆角，由裁切卡片的容器提供；候选栏的描边按它画，才不会被卡片圆角切掉。 */
+internal val LocalKeyboardCardTopCorner = compositionLocalOf { FloatingKeyboardCardCorner }
 
 @Composable
 internal fun FloatingKeyboardContainer(
@@ -121,10 +150,20 @@ internal fun FloatingKeyboardContainer(
     onCornerTap: (() -> Unit)? = null,
     /** 角标把手热区（窗口坐标）：露在卡片外的部分要并进输入法触摸区。角标没亮时为空表。 */
     onCornerHandlesPositioned: (List<android.graphics.Rect>) -> Unit = {},
+    /** 「填满留空处」：固定卡片两侧铺了键盘背景，卡片和两侧拼成一整条（全屏手写时两侧不铺）。 */
+    sidesFilled: Boolean = false,
     keyboardContent: @Composable () -> Unit,
 ) {
     val density = LocalDensity.current
-    val fixedCardShape = keyboardPanelShape(false, rememberRoundedKeyboardBottom())
+    val roundedTop = rememberRoundedKeyboardTop()
+    val roundedBottom = rememberRoundedKeyboardBottom()
+    val fixedCardShape = keyboardPanelShape(false, roundedBottom, roundedTop)
+    val fixedTopCorner = if (roundedTop) FloatingKeyboardCardCorner else 0.dp
+    // 两侧铺满时卡片只在贴着屏幕边的角上圆；候选栏描边两角都圆时才跟着圆。
+    fun cardShape(touchesLeft: Boolean, touchesRight: Boolean) = if (!sidesFilled) fixedCardShape
+        else filledSidesCardShape(touchesLeft, touchesRight, roundedTop, roundedBottom)
+    fun cardTopCorner(touchesLeft: Boolean, touchesRight: Boolean) =
+        if (!sidesFilled || touchesLeft && touchesRight) fixedTopCorner else 0.dp
     val dragPalette = com.kingzcheung.xime.ui.theme.LocalKeyboardPalette.current
     val dragIndicatorColor = dragIndicatorColor ?: if (dragPalette != null)
         lerp(dragPalette.background.copy(alpha = 1f), dragPalette.text.copy(alpha = 1f), 0.5f)
@@ -152,32 +191,46 @@ internal fun FloatingKeyboardContainer(
     if (!isFloatingMode) {
         if (previewRect == null) {
             BoxWithConstraints(Modifier.fillMaxSize()) {
+                // 宽度按整 dp 存，屏幕宽多半不是整 dp（1080px / 2.625 = 411.43dp → 411dp = 1079px）：
+                // 差不到 1dp 时卡片居中会把多出的 1px 放在左边，透出后面的应用，看着像左边一条缝、右边没有。
+                // 差不到 1dp 就是要铺满整宽。
                 val width = (resolvedWidthDp.takeIf { it > 0 }
                     ?: resolvedFixedKeyboardWidth(maxWidth.value.roundToInt(), fixedWidthDp)).dp.coerceAtMost(maxWidth)
+                    .let { if (maxWidth - it < 1.dp) maxWidth else it }
                 val travel = ((maxWidth - width) / 2f).value
+                val shift = fixedOffsetX.toFloat().coerceIn(-travel, travel)
+                val touchesLeft = shift <= -travel + 0.5f
+                val touchesRight = shift >= travel - 0.5f
+                val undockPull = remember { UndockPullState() }
                 Box(Modifier.align(Alignment.TopCenter)
-                    .absoluteOffset(x = fixedOffsetX.toFloat().coerceIn(-travel, travel).dp)
-                    .width(width).fillMaxSize().clip(fixedCardShape).testTag("fixed-keyboard-card")
+                    .absoluteOffset(x = shift.dp)
+                    .width(width).fillMaxSize().clip(cardShape(touchesLeft, touchesRight)).testTag("fixed-keyboard-card")
+                    .then(if (onUndock != null) Modifier.undockPull(undockPull, onUndock) else Modifier)
                     .onGloballyPositioned { coords ->
+                        undockPull.card = coords
                         val pos = coords.positionInWindow()
                         onCardPositioned(pos.x.roundToInt(), pos.y.roundToInt(),
                             (pos.x + coords.size.width).roundToInt(), (pos.y + coords.size.height).roundToInt())
                     }) {
-                    LanguageMenuPanel { keyboardContent() }
-                    if (onUndock != null) UndockHandle(Modifier.align(Alignment.TopCenter), dragIndicatorColor,
-                        highlightColor, onUndock)
+                    CompositionLocalProvider(LocalKeyboardCardTopCorner provides cardTopCorner(touchesLeft, touchesRight)) {
+                        LanguageMenuPanel { keyboardContent() }
+                    }
+                    if (onUndock != null) UndockHandle(Modifier.align(Alignment.TopCenter), undockPull,
+                        dragIndicatorColor, highlightColor)
                 }
             }
         } else {
             val previewWidth = with(density) { previewRect.width.toDp() }
             val previewHeight = with(density) { previewRect.height.toDp() }
-            Box(modifier = Modifier.fillMaxSize()) {
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val touchesLeft = previewRect.left <= 0.5f
+                val touchesRight = previewRect.right >= constraints.maxWidth - 0.5f
                 Box(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .absoluteOffset { IntOffset(previewRect.left.roundToInt(), previewRect.top.roundToInt()) }
                         .size(previewWidth, previewHeight)
-                        .clip(fixedCardShape)
+                        .clip(cardShape(touchesLeft, touchesRight))
                         .testTag("fixed-keyboard-resize-preview")
                         .onGloballyPositioned { coords ->
                             val pos = coords.positionInWindow()
@@ -191,7 +244,7 @@ internal fun FloatingKeyboardContainer(
                         }
                 ) {
                     // Resize controls own input; keep the menu host out of the live preview.
-                    keyboardContent()
+                    CompositionLocalProvider(LocalKeyboardCardTopCorner provides cardTopCorner(touchesLeft, touchesRight)) { keyboardContent() }
                 }
             }
         }
@@ -555,63 +608,90 @@ internal fun KeyboardModeMorphOutline(
     )
 }
 
+/** 固定键盘顶边上拉的进度：手势在卡片上（[undockPull]），把手只负责画。 */
+internal class UndockPullState {
+    /** 正在往上拉（过了触摸阈值，还没松手）；只有这时才画把手。 */
+    var pulling by mutableStateOf(false)
+    /** 0..1：过了 [FIXED_TO_FLOATING_DEAD_ZONE_DP] 的阻力后再拉 [FIXED_TO_FLOATING_PULL_DP] 满。 */
+    var progress by mutableFloatStateOf(0f)
+    /** 卡片在窗口里的位置：拉满后把手指位置交给跟手时要换成窗口坐标。 */
+    var card: androidx.compose.ui.layout.LayoutCoordinates? = null
+}
+
 /**
- * 固定键盘顶边正中的小把手：和悬浮键盘底部拖动条同样的 40×4dp 圆头条，只占顶边一小块。
- * 按住往上拉，先过 [FIXED_TO_FLOATING_DEAD_ZONE_DP] 的阻力，再拉满一段（把手随进度变长、变成强调色），满了振动一下，松手变悬浮；
- * 不满松手保持固定。
+ * 固定键盘顶边正中（[UNDOCK_HANDLE_WIDTH_DP]×[UNDOCK_HANDLE_HEIGHT_DP]）按住往上拉：先过阻力，再拉满一段，满了振动一下，
+ * 松手变悬浮；有外层跟手（[LocalKeyboardUndockFollow]）时拉满就变，悬浮键盘接着跟这根手指走。不满松手保持固定。
+ * 在卡片的 Initial 轮里看手势、按下不消费：点按照样落到下面的工具栏按钮，只有往上拉过触摸阈值才接管（之后消费，
+ * 下面的点击随之取消）。用户 10-31：一直画着的小条像三星分屏把手，又压着工具栏按钮的上沿点不动。
+ */
+private fun Modifier.undockPull(state: UndockPullState, onUndock: () -> Unit): Modifier = composed {
+    val currentOnUndock by rememberUpdatedState(onUndock)
+    val view = androidx.compose.ui.platform.LocalView.current
+    val follow = LocalKeyboardUndockFollow.current
+    pointerInput(state, follow) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+            val halfWidth = UNDOCK_HANDLE_WIDTH_DP.dp.toPx() / 2f
+            if (kotlin.math.abs(down.position.x - size.width / 2f) > halfWidth ||
+                down.position.y > UNDOCK_HANDLE_HEIGHT_DP.dp.toPx()) return@awaitEachGesture
+            val slop = viewConfiguration.touchSlop
+            try {
+                while (true) {
+                    val change = awaitPointerEvent(PointerEventPass.Initial).changes
+                        .firstOrNull { it.id == down.id } ?: break
+                    if (!change.pressed) {
+                        if (state.pulling && state.progress >= 1f) currentOnUndock()
+                        break
+                    }
+                    val up = down.position.y - change.position.y
+                    if (!state.pulling) {
+                        // 还没拉起来：往上过阈值才接管，横向先过阈值就交给下面的按钮（不再管这一次）。
+                        if (up > slop) state.pulling = true
+                        else if (kotlin.math.abs(change.position.x - down.position.x) > slop) break
+                        else continue
+                    }
+                    change.consume()
+                    val before = state.progress
+                    state.progress = fixedToFloatingPullProgress(up.coerceAtLeast(0f) / 1.dp.toPx())
+                    if (state.progress >= 1f && before < 1f) {
+                        view.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
+                        // 拉满就变悬浮，悬浮键盘接着跟这根手指走，松手停在那里；没有外层跟手时照旧松手才变。
+                        // 拿不到卡片位置时手指位置由外层在同一个事件里补上。
+                        if (follow != null) {
+                            follow.start(change.id, state.card?.takeIf { it.isAttached }?.localToWindow(change.position))
+                            currentOnUndock()
+                            break
+                        }
+                    }
+                }
+            } finally {
+                state.pulling = false
+                state.progress = 0f
+            }
+        }
+    }
+}
+
+/**
+ * 固定键盘顶边正中的把手：和悬浮键盘底部拖动条同样的 40×4dp 圆头条，平时不画，按住往上拉时才出现，
+ * 随进度变长、变成强调色。手势见 [undockPull]；这里的方块只用来定位和给测试、无障碍报状态。
  */
 @Composable
 private fun UndockHandle(
     modifier: Modifier,
+    state: UndockPullState,
     indicatorColor: Color,
     readyColor: Color,
-    onUndock: () -> Unit,
 ) {
-    val currentOnUndock by rememberUpdatedState(onUndock)
-    val view = androidx.compose.ui.platform.LocalView.current
-    val follow = LocalKeyboardUndockFollow.current
-    var progress by remember { mutableFloatStateOf(0f) }
-    var handleCoords by remember { mutableStateOf<androidx.compose.ui.layout.LayoutCoordinates?>(null) }
+    val progress = state.progress
     Box(
         modifier = modifier
             .size(UNDOCK_HANDLE_WIDTH_DP.dp, UNDOCK_HANDLE_HEIGHT_DP.dp)
             .testTag("fixed-undock-handle")
-            .semantics { stateDescription = if (progress >= 1f) "ready" else "docked" }
-            .onGloballyPositioned { handleCoords = it }
-            .pointerInput(follow) {
-                var pulled = 0f
-                var undocked = false
-                detectDragGestures(
-                    onDragStart = { pulled = 0f; progress = 0f; undocked = false },
-                    onDragEnd = {
-                        val ready = progress >= 1f && !undocked
-                        progress = 0f
-                        if (ready) currentOnUndock()
-                    },
-                    onDragCancel = { progress = 0f },
-                ) { change, amount ->
-                    change.consume()
-                    if (undocked) return@detectDragGestures
-                    pulled = (pulled - amount.y).coerceAtLeast(0f)
-                    val before = progress
-                    progress = fixedToFloatingPullProgress(pulled / 1.dp.toPx())
-                    if (progress >= 1f && before < 1f) {
-                        view.performHapticFeedback(android.view.HapticFeedbackConstants.KEYBOARD_TAP)
-                        // 拉满就变悬浮，悬浮键盘接着跟这根手指走，松手停在那里；没有外层跟手时照旧松手才变。
-                        // 拿不到把手位置时手指位置由外层在同一个事件里补上。
-                        if (follow != null) {
-                            undocked = true
-                            progress = 0f
-                            follow.start(change.id,
-                                handleCoords?.takeIf { it.isAttached }?.localToWindow(change.position))
-                            currentOnUndock()
-                        }
-                    }
-                }
-            },
+            .semantics { stateDescription = if (progress >= 1f) "ready" else "docked" },
         contentAlignment = Alignment.TopCenter,
     ) {
-        Box(
+        if (state.pulling) Box(
             modifier = Modifier
                 .padding(top = 4.dp)
                 .width((40f + 24f * progress).dp)

@@ -9,6 +9,7 @@ import org.json.JSONObject
 object ChineseSchemas {
     val ids = listOf("t9_pinyin", "rime_ice", "pinyin_14jian", "double_pinyin_flypy", "double_pinyin_flypy_14jian") + BuiltinLetterLayouts.ids
     private const val ADDED = "cyime_chinese_defaults_v1"
+    private const val DOUBLE_PINYIN_ADDED = "cyime_double_pinyin_defaults_v1"
 
     /** Only known, unedited predecessor bytes may migrate; personal/market ownership wins above. */
     internal fun isPreviousMergedBuiltin(path: String, bytes: ByteArray): Boolean {
@@ -128,7 +129,19 @@ object ChineseSchemas {
     /** 一次整理旧默认和重复模式，之后用户的启停选择继续有效。 */
     @Synchronized
     fun addOnFirstUpgrade(context: Context, enabled: List<String>): List<String> =
-        addChineseDefaults(context, enabled)
+        addDoublePinyinDefaults(context, addChineseDefaults(context, enabled))
+
+    /** 内置双拼新装和升级都补进方案栏一次；之后在双拼方案页隐藏仍有效。 */
+    private fun addDoublePinyinDefaults(context: Context, enabled: List<String>): List<String> {
+        val prefs = SettingsPreferences.getPrefsPublic(context)
+        if (prefs.getBoolean(DOUBLE_PINYIN_ADDED, false) || !prefs.getBoolean(ADDED, false)) return enabled
+        val available = SchemaManager.getRimeDir(context).listFiles().orEmpty()
+            .filter { it.name.endsWith(".schema.yaml") }.map { it.name.removeSuffix(".schema.yaml") }.toSet()
+        val updated = CyimeInputDefaults.withDoublePinyin(enabled, available) ?: return enabled
+        if (updated != enabled) SchemaManager.setEnabledSchemas(context, updated)
+        prefs.edit().putBoolean(DOUBLE_PINYIN_ADDED, true).apply()
+        return updated
+    }
 
     private fun addChineseDefaults(context: Context, enabled: List<String>): List<String> {
         val prefs = SettingsPreferences.getPrefsPublic(context)
@@ -145,7 +158,7 @@ object ChineseSchemas {
             return repaired
         }
         val updated = CyimeInputDefaults.withCompanions((normalized.filterNot { it in CyimeInputDefaults.legacyDefaults } +
-            CyimeInputDefaults.recommended.filter { it in available }).distinct(), available)
+            CyimeInputDefaults.firstDefaults(isFreshInstall(context)).filter { it in available }).distinct(), available)
         if (updated != enabled) SchemaManager.setEnabledSchemas(context, updated)
         val current = SettingsPreferences.getCurrentSchema(context)
         val selected = CyimeInputDefaults.canonicalIds(listOf(current), available).firstOrNull()
@@ -154,6 +167,12 @@ object ChineseSchemas {
         prefs.edit().putBoolean(ADDED, true).apply()
         return updated
     }
+
+    /** 装上以后没更新过：首次安装时间等于最后更新时间。升级（覆盖安装）的人这两个时间不同。 */
+    private fun isFreshInstall(context: Context): Boolean = runCatching {
+        val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        info.firstInstallTime == info.lastUpdateTime
+    }.getOrDefault(false)
 
     fun displayName(id: String, original: String): String = CustomKeyboardLayouts.find(id)?.name ?: when (id) {
         "rime_ice" -> "中文26键"

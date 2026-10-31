@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.twotone.GraphicEq
 import androidx.compose.material.icons.twotone.Tune
+import androidx.compose.material.icons.twotone.DirectionsCar
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -108,8 +109,16 @@ fun SpeechToTextSettingsContent(
             var sttEnabled by remember { mutableStateOf(SettingsPreferences.isSttEnabled(context)) }
             SettingsSection(title = "语音输入") {
                 SettingsToggleItem(icon = Icons.TwoTone.GraphicEq, title = "语音转文本",
-                    subtitle = "长按空格或点工具栏麦克风说话，转成文字上屏",
+                    subtitle = if (sttEnabled) "点工具栏麦克风说话，转成文字上屏；想按住空格说话，在「按键与手势 › 长按空格」选「语音开关」"
+                        else "已关闭：工具栏麦克风、按住空格说话和物理键盘 Alt + H 都不会开麦",
                     checked = sttEnabled, onCheckedChange = { sttEnabled = it; SettingsPreferences.setSttEnabled(context, it) })
+                // 开车连续语音：别人提的需求，默认关（VoicePillResume）。只在语音打开时生效，关着语音就不显示。
+                if (sttEnabled) {
+                    var pillResume by remember { mutableStateOf(SettingsPreferences.isSttPillResume(context)) }
+                    SettingsToggleItem(icon = Icons.TwoTone.DirectionsCar, title = "开车连续语音",
+                        subtitle = "语音收起成悬浮条后，发送完回到输入框自动接着听",
+                        checked = pillResume, onCheckedChange = { pillResume = it; SettingsPreferences.setSttPillResume(context, it) })
+                }
             }
 
             // 模型名（Paraformer、SenseVoice…）多数人看不懂：先给一个按手机和用法自动选好的入口。
@@ -165,7 +174,7 @@ fun SpeechToTextSettingsContent(
             SettingsSection(title = "字幕") {
                 // CaptionController.chineseMode：字幕自己挑模型，和上面语音输入的选择分开，这里写明，免得两处看起来矛盾。
                 Text(
-                    text = "字幕的中文识别不跟上面的模型选择：Paraformer 和 SenseVoice 都下载了就边说边出字、再由 SenseVoice 校正，只有 SenseVoice 就一句一句出字；不用 X-ASR 和整句定稿。",
+                    text = "字幕的中文识别不跟上面的模型选择，按已下载的模型自动选。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp)
@@ -234,7 +243,7 @@ fun SpeechToTextSettingsContent(
                         )
                     }
                     Text(
-                        text = "和 Google 实时转写一样，“下载/CyIME字幕”里超过 3 天的字幕记录在下次打开字幕时自动删掉。关闭后一直保留。",
+                        text = "“下载/CyIME字幕”里超过 3 天的字幕记录在下次打开字幕时自动删掉。关闭后一直保留。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

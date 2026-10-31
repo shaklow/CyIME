@@ -301,26 +301,114 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         }
     }
 
+    /** 英文选词后自动补的空格（默认关），只管紧接着的一个键，见 [EnglishAutoSpace]。 */
+    internal val englishAutoSpace = EnglishAutoSpace()
+
+    /**
+     * 紧跟自动空格的键：空格不再多打，句末标点放到空格前面，右括号去掉空格；返回 true 表示这个键已处理完。
+     * 其他键、或光标前已不是刚上屏的“词+空格”时返回 false，键照常处理、空格保留。
+     */
+    internal suspend fun consumeEnglishAutoSpace(key: String): Boolean {
+        if (EnglishAutoSpace.isNeutral(key)) return false
+        val armed = englishAutoSpace.take() ?: return false
+        val replacement = EnglishAutoSpace.replacementFor(key) ?: return false
+        return withEditor {
+            if (service.uiState.value.inputTarget.isInternal) return@withEditor false
+            val ic = service.currentInputConnection ?: return@withEditor false
+            if (!ic.getSelectedText(0).isNullOrEmpty()) return@withEditor false
+            val before = runCatching { ic.getTextBeforeCursor(armed.length, 0)?.toString() }.getOrNull()
+            if (before != armed) return@withEditor false
+            if (replacement.isEmpty()) return@withEditor true
+            ic.beginBatchEdit()
+            try {
+                if (!ic.deleteSurroundingText(1, 0)) return@withEditor false
+                // 宿主不收标点就把空格放回去，什么都不丢。
+                if (!service.commitTextAndPredict(replacement, isPaste = false, allowPrediction = false).accepted) ic.commitText(" ", 1)
+                // 开着「标点后自动加空格」时，换到标点后面的空格同样只管下一个键：连打 ... ?! 空格一直留在最后。
+                else if (replacement.length == 2 && replacement[1] == ' ' && englishPunctuationSpaceEnabled())
+                    englishAutoSpace.arm(replacement.substring(0, 1))
+            } finally {
+                ic.endBatchEdit()
+            }
+            service.candidateState.value = service.candidateState.value.copy(
+                pendingEnglishText = "", associationCandidates = emptyList())
+            true
+        }
+    }
+
+    private fun englishPunctuationSpaceEnabled(): Boolean =
+        SettingsPreferences.getPrefsPublic(service).getBoolean(EnglishAutoSpace.PUNCTUATION_PREF_KEY, false)
+
+    /**
+     * 英文标点后自动加空格（默认关）：英文、西班牙语屏幕键盘在字母后面打 , . ? ! : ; 时上屏“标点+空格”，
+     * 补的空格按 [EnglishAutoSpace] 的规则只管下一个键。返回 true 表示已上屏；
+     * 中文、日文、实体键盘、数字键盘、网址/邮箱/密码/数字框、终端、有选区或在组字时都返回 false，照常处理。
+     */
+    internal suspend fun commitEnglishPunctuationSpace(key: String): Boolean {
+        if (key.length != 1 || !englishPunctuationSpaceEnabled()) return false
+        return withEditor {
+            val ui = service.uiState.value
+            if (ui.inputTarget.isInternal || !(ui.isAsciiMode || ui.inputProfile.language.typesLettersDirectly)) return@withEditor false
+            if (service.textCommit.isJapaneseProfile()) return@withEditor false
+            if (service.editorInputPolicy.field.scoped || service.isSecretEditor() || service.isTerminalEditor()) return@withEditor false
+            if (service.keyboardViewModel.keyboardState.value is KeyboardLayoutState.Number) return@withEditor false
+            val candidates = service.candidateState.value
+            if (candidates.isComposing || candidates.inputText.isNotEmpty() || service.t9PartialSegments.isNotEmpty()) return@withEditor false
+            val ic = service.currentInputConnection ?: return@withEditor false
+            if (!ic.getSelectedText(0).isNullOrEmpty()) return@withEditor false
+            val before = runCatching { ic.getTextBeforeCursor(1, 0) }.getOrNull()
+            val after = runCatching { ic.getTextAfterCursor(1, 0) }.getOrNull()
+            if (!EnglishAutoSpace.spacesAfterPunctuation(key, before, after)) return@withEditor false
+            if (!service.commitTextAndPredict("$key ", isPaste = false, allowPrediction = false).accepted) return@withEditor false
+            service.candidateState.value = service.candidateState.value.copy(
+                pendingEnglishText = "", associationCandidates = emptyList())
+            englishAutoSpace.arm(key)
+            true
+        }
+    }
+
+    /** 紧挨着的上一笔英文滑行（候选、大小写），连着划时连同它一起选；屏上不再紧跟它就作废。 */
+    private var lastGlide: com.kingzcheung.xime.glide.PreviousGlide? = null
+
     /**
      * 英文滑行整词上屏：与逐字母英文输入同一提交边界。前面紧挨文字时补空格；
-     * 上屏后记为当前英文词，其余候选沿用英文候选的回删替换。
+     * 按光标前的词选这一笔的词，紧挨着上一笔滑行时前后两个词一起选，必要时先改掉上一个词（I'm done）。
+     * 上屏后记为当前英文词，其余候选沿用英文候选的回删替换；整对候选连上一个词一起替换。
      */
-    internal fun commitGlideWord(word: String, alternatives: List<String>) {
-        if (word.isEmpty() || hasPendingCandidateCommit) return
+    internal fun commitGlideWord(candidates: List<com.kingzcheung.xime.glide.GlideCandidate>, case: (String) -> String) {
+        if (candidates.isEmpty() || hasPendingCandidateCommit) return
         postRimeJob {
             withEditor {
                 if (!service.uiState.value.isAsciiMode) return@withEditor
                 service.predictionManager.invalidatePendingPredictions()
                 val state = service.candidateState.value
+                val textBefore = service.currentInputConnection?.getTextBeforeCursor(64, 0)?.toString().orEmpty()
+                val replaceSupported = service.supportsEnglishCandidateReplace()
+                val previous = lastGlide?.takeIf {
+                    replaceSupported && state.glidedWord.isNotEmpty() && it.text == state.glidedWord &&
+                        state.pendingEnglishText.endsWith(state.glidedWord) && textBefore.endsWith(state.glidedWord)
+                }
+                fun planFor(previous: com.kingzcheung.xime.glide.PreviousGlide?) = com.kingzcheung.xime.glide.planGlideCommit(
+                    candidates, case, previous,
+                    com.kingzcheung.xime.glide.glideContextWord(if (previous != null) textBefore.dropLast(previous.text.length) else textBefore),
+                    com.kingzcheung.xime.glide.GlideLexicon.loadedBigrams(), com.kingzcheung.xime.glide.GlideLexicon.loadedContractions())
+                var plan = planFor(previous)
+                val head = if (previous == null) null else plan.replacePrevious?.let { replacement ->
+                    if (service.replaceBeforeCursor(previous.text, replacement)) replacement else null
+                } ?: previous?.text
+                // 换上一个词没成功（宿主拒绝）就只选这一笔，不留整对候选。
+                if (previous != null && plan.replacePrevious != null && head == previous.text) plan = planFor(null)
+                val word = plan.word
                 val before = service.currentInputConnection?.getTextBeforeCursor(1, 0)?.lastOrNull()
                 val text = com.kingzcheung.xime.glide.glideCommitText(word, before)
                 if (!service.commitTextAndPredict(text, isPaste = false, allowPrediction = false).accepted) return@withEditor
+                lastGlide = com.kingzcheung.xime.glide.PreviousGlide(word, candidates.take(com.kingzcheung.xime.glide.PAIR_TOP), case)
                 service.candidateState.value = state.copy(
                     inputText = "", preeditText = "", isComposing = false,
                     candidates = emptyList(), candidateComments = emptyList(), candidateActions = emptyList(),
-                    pendingEnglishText = word, glidedWord = word,
-                    associationCandidates = if (service.isSecretEditor()) emptyList() else alternatives.filter { it != word },
-                    englishReplaceSupported = service.supportsEnglishCandidateReplace(),
+                    pendingEnglishText = if (plan.pair && head != null) head + text else word, glidedWord = word,
+                    associationCandidates = if (service.isSecretEditor()) emptyList() else plan.alternatives,
+                    englishReplaceSupported = replaceSupported,
                     hasNextPage = false, hasPrevPage = false, isShowingRecentClipboard = false,
                 )
             }
@@ -336,6 +424,11 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         val input = service.candidateState.value.inputText
         if (input.isNotEmpty() && input.last() != '\'') handleKeyPress("'", false)
         code.forEach { handleKeyPress(it.toString(), false) }
+    }
+
+    /** 当前方案把分号当编码键：微软双拼的 ing，或自建双拼把某个韵母放在分号上（[DoublePinyinScheme.usesSemicolon]）。 */
+    internal fun semicolonIsCode(): Boolean = service.uiState.value.let {
+        !it.isAsciiMode && com.kingzcheung.xime.settings.DoublePinyinSchemes.find(it.currentSchemaId)?.usesSemicolon == true
     }
 
     internal fun handleKeyPress(key: String, isShifted: Boolean, hardwarePageDirection: Int = 0,
@@ -452,7 +545,13 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                     if (key.length == 1) {
                         val isLetter = key.matches(Regex("[a-zA-Z]"))
                         val isChineseMode = !service.uiState.value.isAsciiMode
-                        if (isLetter && isChineseMode) {
+                        // 微软双拼的分号：打字中和字母一样进 Rime（ing），没在打字时照旧按标点上屏。
+                        val semicolonCode = key == ";" && semicolonIsCode()
+                        if (semicolonCode && !hasComposing && hardwareEvent == null) {
+                            service.textCommit.commitLiteralText(key)
+                            return
+                        }
+                        if ((isLetter || semicolonCode && hasComposing) && isChineseMode) {
                             // 中文模式：字母进 Rime 拼音组合，候选栏选词后经 commitText 重定向进面板输入框
                             val keyCode = if (mergedKey) service.rimeEngine.mergedLetterKeyCode(key[0]) else key.lowercase()[0].code
                             val result = service.rimeEngine.processKeyAndGetResult(keyCode, 0)
@@ -520,6 +619,13 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             InputCommandOwner.requireOwner().requireCurrent(service.inputReadiness, service.uiState.value.inputSessionId)
             if (!service.inputReadiness.accepts(admission) || hasPendingCandidateCommit) return@command
             if (usesDirectFieldInput && routeDirectFieldKey(key, isShifted, hardwareEvent)) return@command
+            // 分号是编码键的方案（微软双拼）：没在打字时点屏幕上的分号键仍按标点上屏，和以前一样；打字中往下送进 Rime 组成 ing。
+            if (hardwareEvent == null && key == ";" && semicolonIsCode() && service.t9PartialSegments.isEmpty() &&
+                service.rimeEngine.readQueuedComposition()?.input.isNullOrEmpty()) {
+                service.textCommit.literalSubmission(key)?.invoke()
+                return@command
+            }
+            if (englishAutoSpace.isArmed && consumeEnglishAutoSpace(key)) return@command
             if (hardwareEvent != null) {
                 // Idle Tab belongs to the editor: single-line fields move focus (Shift+Tab backwards),
                 // multi-line ones insert a tab. Only an unfinished composition keeps Tab in the IME.
@@ -558,7 +664,9 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 }
                 // 打拼音时不按 Shift 的 ; / \ 等：先把字母原样上屏（不上屏首选，Gboard 规则，用户 2026-10-24），
                 // 再按空闲时的标点规则出符号。翻页键另有入口，拼音分隔符 ' 照旧。
-                if (hardwarePageDirection == 0 && key.length == 1 && key != "'" && isLiteralPunctuation(key) &&
+                // 分号是编码键的方案（微软双拼）分号照样送进 Rime：打字中是 ing，没在打字时由 Rime 出标点。
+                if (hardwarePageDirection == 0 && key.length == 1 && key != "'" && !(key == ";" && semicolonIsCode()) &&
+                    isLiteralPunctuation(key) &&
                     !service.uiState.value.isAsciiMode &&
                     service.uiState.value.inputProfile.language == com.kingzcheung.xime.settings.InputLanguage.CHINESE &&
                     (service.rimeEngine.readQueuedComposition()?.input?.isNotEmpty() == true ||
@@ -580,9 +688,13 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 return@command
             }
             val english = service.uiState.value.let {
-                it.isAsciiMode || it.inputProfile.language == com.kingzcheung.xime.settings.InputLanguage.ENGLISH
+                it.isAsciiMode || it.inputProfile.language.typesLettersDirectly
             }
-            if (english && key.length == 1 && (key[0] in 'a'..'z' || key[0] in 'A'..'Z')) {
+            // 西班牙语键盘上 ñ、á 这些也是字母：同样逐字上屏、参与补全。
+            val spanish = service.uiState.value.let {
+                !it.isAsciiMode && it.inputProfile.language == com.kingzcheung.xime.settings.InputLanguage.SPANISH
+            }
+            if (english && isDirectLetter(key, spanish)) {
                 val next = withEditor {
                     // Clear and commit in the same Main visit, including when the
                     // previous letter already has completions on screen.
@@ -590,7 +702,8 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                     service.candidateState.value = service.candidateState.value.copy(associationCandidates = emptyList())
                     val current = service.candidateState.value
                     // 滑行出词后直接点字母：光标仍紧跟那个词时自动补空格；空格、删除或标点之后不补。
-                    val afterGlide = current.glidedWord.isNotEmpty() && current.pendingEnglishText == current.glidedWord &&
+                    // 连着划两个词时当前英文词是整对（I'm done），光标仍紧跟这一笔的词就算。
+                    val afterGlide = current.glidedWord.isNotEmpty() && current.pendingEnglishText.endsWith(current.glidedWord) &&
                         service.currentInputConnection?.getTextBeforeCursor(current.glidedWord.length, 0)
                             ?.toString() == current.glidedWord
                     // Japanese 英数 follows 全角／半角, so full-width letters can be typed directly.
@@ -609,7 +722,8 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                         val words = service.predictionManager.getEnglishAssociations(pending)
                         withEditor {
                             val current = service.candidateState.value
-                            if (current.pendingEnglishText == pending && service.uiState.value.isAsciiMode) {
+                            if (current.pendingEnglishText == pending && service.uiState.value.let {
+                                    it.isAsciiMode || it.inputProfile.language.typesLettersDirectly }) {
                                 service.candidateState.value = current.copy(associationCandidates = words)
                             }
                         }
@@ -641,16 +755,31 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                 val mixed = com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service)
                     .getBoolean(com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.MIXED_INPUT_KEY, false)
                 if (service.rimeEngine.getOption("cyime_mixed_input") != mixed) service.rimeEngine.setOption("cyime_mixed_input", mixed)
-                // 生僻字（默认关）：同上。
-                val rare = com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service)
-                    .getBoolean(com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.RARE_CHARACTERS_KEY, false)
-                if (service.rimeEngine.getOption("cyime_rare_chars") != rare) service.rimeEngine.setOption("cyime_rare_chars", rare)
             }
             // 繁体输出（默认关）：同上，按键前补设 traditionalization；九键数字键也走这里。
             if (key.length == 1 && key[0].isLetterOrDigit()) {
                 val traditional = com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service)
                     .getBoolean(com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.TRADITIONAL_OUTPUT_KEY, false)
                 if (service.rimeEngine.getOption("traditionalization") != traditional) service.rimeEngine.setOption("traditionalization", traditional)
+                // 时间日期候选（默认关）：同上；选项是反的，会话重建清零后仍是开。
+                val datetimeOff = !com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service)
+                    .getBoolean(com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.DATETIME_CANDIDATES_KEY, false)
+                if (service.rimeEngine.getOption("_cyime_datetime_off") != datetimeOff) service.rimeEngine.setOption("_cyime_datetime_off", datetimeOff)
+                // 候选里显示表情（默认关）：同上。打开输入框时 restorePersistedSchemaOptions 会把方案里的 emoji 开关清成 false，这里按设置补回。
+                val emoji = com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service)
+                    .getBoolean(com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.CANDIDATE_EMOJI_KEY, false)
+                if (service.rimeEngine.getOption("emoji") != emoji) service.rimeEngine.setOption("emoji", emoji)
+                // 打符号名出符号（默认关）：同上，方案里的 simplifier@cyime_symbols 只在这个选项开着时工作。
+                val symbolNames = com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service)
+                    .getBoolean(com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.SYMBOL_NAMES_KEY, false)
+                if (service.rimeEngine.getOption("cyime_symbol_names") != symbolNames) service.rimeEngine.setOption("cyime_symbol_names", symbolNames)
+                // 生僻字（默认关）：同上，26 键全拼和九键都用。
+                val rare = com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service)
+                    .getBoolean(com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.RARE_CHARACTERS_KEY, false)
+                if (service.rimeEngine.getOption("cyime_rare_chars") != rare) service.rimeEngine.setOption("cyime_rare_chars", rare)
+                // 仓颉码表本身是繁体，反过来：simplification 开着时转简体。
+                if (service.uiState.value.inputProfile.scheme == com.kingzcheung.xime.settings.InputScheme.CANGJIE &&
+                    service.rimeEngine.getOption("simplification") == traditional) service.rimeEngine.setOption("simplification", !traditional)
             }
             if (service.japaneseInputController.handleKey(key)) return@command
             val state = service.uiState.value
@@ -673,7 +802,11 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                     // 上滑清空 = 多次退格快捷方式（对标主流输入法）：输入态只清输入态，空闲态清空全部已上屏。
                     // 引擎繁忙时不把未知状态当成空闲，更不能清正文。
                     if (service.rimeEngine.compositionActiveForDeletion() == null) return@command
-                    if (hasInputState(candState)) {
+                    // 「打字中清空整个输入框」（默认关）：打字中也直接清整个输入框，没上屏的拼音丢掉，撤回只放回输入框原来的字。
+                    val wholeField = com.kingzcheung.xime.settings.SettingsPreferences.getPrefsPublic(service).getBoolean(
+                        com.kingzcheung.xime.ui.keyboard.KeyboardInputPreferences.CLEAR_ALL_WHILE_COMPOSING_KEY, false)
+                    val scope = ClearAllScope.of(hasInputState(candState), wholeField)
+                    if (!scope.field) {
                         service.lastClearedDocument = null
                         // 输入态：只清输入态（等价于 clear_composition），并记录 lastClearedText 供下滑撤回。
                         // 需在 clearInputStateForKeys() 之前记录（该函数会清空 preeditText/inputText）。
@@ -697,6 +830,10 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                         }
                         clearInputStateForKeys()
                     } else {
+                        // 直接上屏的英文已经在输入框里，跟着下面整框一起删、一起撤回，这里不单独回删。
+                        // 输入框本来是空的（只有拼音）时，撤回照原来一样放回拼音。
+                        val composedText = if (scope.composition && candState.pendingEnglishText.isEmpty()) candState.inputText else ""
+                        if (scope.composition) clearInputStateForKeys()
                         // 空闲态：清空整个输入框（光标前、选区、光标后），记下来供下滑撤回原位恢复。
                         service.calculatorEngine.clear()
                         updateCalculatorCandidates()
@@ -713,16 +850,22 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                             isShowingRecentClipboard = false,
                             candidateActions = emptyList()
                         )
+                        var rejected: String? = null
                         withEditor {
                             service.lastClearedText = ""
                             service.lastClearedDocument = null
+                            rejected = rejectedCommitBefore(clearing = true)
                             service.currentInputConnection?.let { ic ->
                                 service.endComposingInputBox()
                                 val limit = XimeInputMethodService.SAFE_TEXT_LIMIT
                                 val document = ic.readDocumentForClear(limit) ?: return@let
-                                service.lastClearedDocument = ic.clearDocument(document, limit)
+                                service.lastClearedDocument = ic.clearDocument(document, limit) {
+                                    service.currentInputConnection === ic
+                                }
                             }
+                            if (service.lastClearedDocument == null) service.lastClearedText = composedText
                         }
+                        rejected?.let(::unlearnRejectedCommit)
                     }
                     needsUIUpdate = true
                 }
@@ -767,8 +910,10 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                     val engineInput = service.rimeEngine.getInput()
                     // UI publication may lag the FIFO. Enter consumes unfinished input;
                     // only a subsequent, idle Enter may invoke the editor action.
+                    // 西班牙语的字母已逐字上屏，没有可提交的输入：回车照常换行或执行动作。
                     if (engineInput.isNotEmpty() || candState.isComposing ||
-                        (!state.isAsciiMode && candState.pendingEnglishText.isNotEmpty())) {
+                        (!state.isAsciiMode && !state.inputProfile.language.typesLettersDirectly &&
+                            candState.pendingEnglishText.isNotEmpty())) {
                         // T9 和 14 键提交屏上的解码拼音（T9 含 partial commit 累积），其他用 RIME input。
                         val isT9 = isT9Schema(state.currentSchemaId)
                         val input = rawCompositionCommitText(engineInput, candState.shownPreedit(state.inputProfile), isT9,
@@ -1274,7 +1419,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         val snapshot = withEditor {
             val ui = service.uiState.value
             hardwareCandidateSnapshot(service.candidateState.value,
-                ui.isAsciiMode || ui.inputProfile.language == com.kingzcheung.xime.settings.InputLanguage.ENGLISH,
+                ui.isAsciiMode || ui.inputProfile.language.typesLettersDirectly,
                 service.predictionManager.hasPendingPrediction)
         }
         val engineHasInput = composition
@@ -1465,13 +1610,20 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         if (usesDirectFieldInput) return false
         val state = service.candidateState.value
         service.predictionManager.invalidatePendingPredictions()
+        englishAutoSpace.disarm()
+        // 英文选词后自动加空格（默认关）：只跟在英文补全词后面，中文联想不加。
+        val autoSpace = state.pendingEnglishText.isNotEmpty() &&
+            service.uiState.value.let { (it.isAsciiMode || it.inputProfile.language.typesLettersDirectly) && !it.inputTarget.isInternal } &&
+            SettingsPreferences.getPrefsPublic(service).getBoolean(EnglishAutoSpace.PREF_KEY, false)
         val accepted = commitAssociationSelection(state, index,
             commit = { text ->
                 service.commitTextAndPredict(text, isPaste = false,
                     allowPrediction = !SettingsPreferences.isSingleAssociationMode(service)).accepted
             },
-            replace = service::replaceBeforeCursor)
+            replace = service::replaceBeforeCursor,
+            suffix = if (autoSpace) " " else "")
         if (!accepted) return false
+        if (autoSpace) associationWordAt(state, index)?.let(englishAutoSpace::arm)
         service.candidateState.value = service.candidateState.value.copy(
             pendingEnglishText = "", associationCandidates = emptyList())
         hardwareNavigation.clear()
@@ -1494,6 +1646,31 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
         }
     }
 
+    /**
+     * 「删掉刚上屏的词不学习」（默认关）：这一下退格（或上滑清空）把 Rime 刚上屏的那段整个删掉时，返回要减去学习的词。
+     * 开关关着、没有在跟踪时不读输入框。主线程调用。
+     */
+    private fun rejectedCommitBefore(clearing: Boolean): String? {
+        val tracker = service.rimeEngine.rejectedCommit
+        val needed = tracker.neededLength()
+        if (needed == 0) return null
+        val ic = service.currentInputConnection
+        if (!SettingsPreferences.isUnlearnRejectedCommit(service) || service.uiState.value.inputTarget.isInternal || ic == null) {
+            tracker.clear()
+            return null
+        }
+        val before = runCatching { ic.getTextBeforeCursor(needed, 0) }.getOrNull()
+        if (clearing) return tracker.beforeClear(before)
+        val selected = runCatching { !ic.getSelectedText(0).isNullOrEmpty() }.getOrDefault(true)
+        return tracker.beforeBackspace(before, selected)
+    }
+
+    /** 在引擎线程上从用户词库减去刚被删掉的那一次上屏。 */
+    private fun unlearnRejectedCommit(word: String) {
+        val taken = service.rimeEngine.unlearn("$word\t1")
+        Log.d(XimeInputMethodService.TAG, "rejected commit unlearned: $taken")
+    }
+
     /** Each tap keeps its FIFO position; a hold allows only one outstanding repeat. */
     internal fun handleDeleteKey() {
         // Keep this physical action at its original position, including D-D-A and D-A-D.
@@ -1508,6 +1685,8 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
     /** 单次退格处理（service.keyProcessingDispatcher 上执行）。 */
     internal suspend fun processDeleteKey() {
         val owner = service.uiState.value.inputSessionId
+        // 退格照常删掉自动补的空格；之后再打标点、空格不再按自动空格处理。
+        englishAutoSpace.disarm()
         // 快捷发送表单显示：退格按焦点路由到表单内 EditText（与单击退格同一路径），不进入 Rime
         if (service.uiState.value.showQuickSendForm) {
             withEditor {
@@ -1546,7 +1725,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             pendingEnglish = candState.pendingEnglishText.isNotEmpty(),
             candidatesVisible = candState.associationCandidates.isNotEmpty() || candState.isShowingRecentClipboard,
             predictionPending = predictionWasPending,
-        )
+        ).skippingAssociation(SettingsPreferences.isDeleteSkipsAssociation(service), candState.isShowingRecentClipboard)
         if (target == DeletionTarget.WAIT) return
         // 计算器模式：追踪退格
         val calculatorWasActive = service.calculatorEngine.isActive()
@@ -1624,7 +1803,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
                         val removed = service.t9PartialSegments.rollbackPartialSegments(1)
                         withEditor {
                             if (owner != service.uiState.value.inputSessionId) return@withEditor
-                            if (SettingsPreferences.getInputTextLocation(service)
+                            if (TerminalEditor.inputTextLocation(service)
                                 == SettingsPreferences.INPUT_TEXT_INPUT_BOX) {
                                 service.endComposingInputBox()
                             }
@@ -1660,11 +1839,14 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             else -> {
                 service.predictionManager.deleteLastChar()
 
-                withEditor {
+                val rejected = withEditor {
 
-                    if (owner != service.uiState.value.inputSessionId) return@withEditor
+                    if (owner != service.uiState.value.inputSessionId) return@withEditor null
+                    val word = rejectedCommitBefore(clearing = false)
                     service.sendDeleteKey()
+                    word
                 }
+                rejected?.let(::unlearnRejectedCommit)
 
                 service.candidateState.value = service.candidateState.value.copy(
                     candidates = emptyList(),
@@ -1944,7 +2126,7 @@ internal class ImeKeyRouter(private val service: XimeInputMethodService) {
             hasPrevPage = false,
             candidateFocus = null
         )
-        if (SettingsPreferences.getInputTextLocation(service) ==
+        if (TerminalEditor.inputTextLocation(service) ==
             SettingsPreferences.INPUT_TEXT_INPUT_BOX
         ) {
             withEditor { service.endComposingInputBox() }

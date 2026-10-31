@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.twotone.BugReport
 import androidx.compose.material.icons.twotone.Code
 import androidx.compose.material.icons.twotone.Description
+import androidx.compose.material.icons.twotone.Favorite
 import androidx.compose.material.icons.twotone.PersonOutline
 import androidx.compose.material.icons.twotone.PrivacyTip
 import androidx.compose.material.icons.twotone.Storage
@@ -154,6 +155,7 @@ fun AboutContent(
     onBack: () -> Unit,
     onNavigateToPrivacy: () -> Unit,
     onNavigateToLicenses: () -> Unit,
+    onNavigateToCredits: () -> Unit = {},
     onNavigateToLogViewer: () -> Unit = {},
     onNavigateToHandwritingCapture: () -> Unit = {},
     onNavigateToStorageSpace: () -> Unit = {},
@@ -274,8 +276,20 @@ fun AboutContent(
                     onClick = { uriHandler.openUri("https://github.com/kingzcheung") },
                 )
 
+                AppUpdateSection()
+
             // 链接项
                 SettingsSection(title = "信息与工具") {
+                        SettingsItem(
+                            icon = Icons.TwoTone.Favorite,
+                            title = "鸣谢",
+                            onClick = onNavigateToCredits
+                        )
+                        HorizontalDivider(
+                            modifier = Modifier.padding(start = 56.dp),
+                            thickness = 0.5.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                        )
                         SettingsItem(
                             icon = Icons.TwoTone.PrivacyTip,
                             title = "隐私策略",
@@ -505,7 +519,7 @@ fun PrivacyPolicyContent(
                         
                         PrivacySection(
                             title = "网络权限",
-                            content = "网络权限用于下载输入方案和模型，以及您主动启用的在线服务。本地 Rime、手写和离线语音模型在设备上运行。"
+                            content = "网络权限用于下载输入方案和模型、检查和下载新版本，以及您主动启用的在线服务。检查更新只向 GitHub 查询版本号，不发送输入内容；只有您点「检查更新」或打开「自动检查更新」时才联网查询，新版本由系统安装程序安装。本地 Rime、手写和离线语音模型在设备上运行。"
                         )
                         
                         PrivacySection(

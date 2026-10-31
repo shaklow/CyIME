@@ -56,6 +56,7 @@ import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardDoubleArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.HighlightOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalTextStyle
@@ -238,20 +239,30 @@ fun CandidateBar(
     var showCancelButton by remember(preferences) {
         mutableStateOf(SettingsPreferences.shouldShowCandidateCancelButton(context))
     }
+    var associationCancelOnRight by remember(preferences) {
+        mutableStateOf(SettingsPreferences.isAssociationCancelOnRight(context))
+    }
     DisposableEffect(preferences) {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key == SettingsPreferences.KEY_SHOW_CANDIDATE_CANCEL_BUTTON || key == null) {
                 showCancelButton = SettingsPreferences.shouldShowCandidateCancelButton(context)
+            }
+            if (key == SettingsPreferences.KEY_ASSOCIATION_CANCEL_ON_RIGHT || key == null) {
+                associationCancelOnRight = SettingsPreferences.isAssociationCancelOnRight(context)
             }
         }
         preferences.registerOnSharedPreferenceChangeListener(listener)
         onDispose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
     }
     val showCompositionCancel = showCancelButton && state !is CandidateBarState.Idle && callbacks.onCancelInput != null
+    // 设置「联想时关闭键放右边」：上屏后的联想不在第一个联想词旁边放「<」，改在右边放 ⊗（同一个动作）。
+    val associationCancelRight = showCompositionCancel && associationCancelOnRight && state is CandidateBarState.AssociationOnly
     val commentsAllowed = rememberCandidateCommentsAllowed()
-    val inputTextLocation = SettingsPreferences.getInputTextLocation(context)
+    // 终端里编码一律显示在候选栏（见 TerminalEditor）。
+    val inputTextLocation = com.kingzcheung.xime.service.TerminalEditor.inputTextLocation(context)
     val showInputBoxStyle = inputTextLocation == SettingsPreferences.INPUT_TEXT_INPUT_BOX
     val candidateTextSize = rememberCandidateTextSize()
+    val candidateItemPadding = rememberCandidateItemPadding(candidateTextSize.sp)
     val candidateFontFamily = AppFonts.candidateFontFamily
     val commentFontFamily = AppFonts.commentFontFamily
 
@@ -366,6 +377,7 @@ fun CandidateBar(
     SideEffect { splitGap?.reportBarTop(if (splitGapX != null) barTopInWindow else null) }
     DisposableEffect(splitGap) { onDispose { splitGap?.reportBarTop(null) } }
 
+    val cardTopCorner = LocalKeyboardCardTopCorner.current
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -380,10 +392,13 @@ fun CandidateBar(
             .clipSplitGapColumn(splitGapX) { barOrigin }
             .background(if (glassEnabled) Color.Transparent else protectedVisuals.backgroundColor)
             // Glass rails inherit the keyboard background; only individual controls get a material.
-            .then(if (glassEnabled) Modifier else Modifier.visualMaterial(VisualStyles.current, 0.dp,
+            // 描边的上两角跟键盘卡片同一圆角，否则直角描边在卡片圆角处被切掉（用户 10-31）。
+            .then(if (glassEnabled) Modifier else Modifier.visualMaterial(VisualStyles.current, cardTopCorner,
                 level = if (state is CandidateBarState.Idle) com.kingzcheung.xime.ui.theme.MaterialLevel.FLOATING
-                    else com.kingzcheung.xime.ui.theme.MaterialLevel.BASE))
-            .padding(horizontal = horizontalPadding),
+                    else com.kingzcheung.xime.ui.theme.MaterialLevel.BASE, bottomRadius = 0.dp))
+            .padding(horizontal = horizontalPadding)
+            // 玻璃太薄时字和图标垫反色光晕，宿主是黑是白都看得清（用户 10-31 黑色背景截图）。
+            .glassTextHalo(textSurface?.halo),
         verticalArrangement = Arrangement.Center,
     ) {
         if (showPreedit) {
@@ -425,7 +440,7 @@ fun CandidateBar(
                 .onSizeChanged { toolbarRowWidth = with(rowDensity) { it.width.toDp() } },
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (showCompositionCancel) {
+            if (showCompositionCancel && !associationCancelRight) {
                 KeyboardBackButton({ callbacks.onCancelInput?.invoke() }, iconButtonContainer, protectedVisuals.textColor, label = "取消输入",
                     restingFill = edgeButtonFill, slotWidth = edgeSlot, cornerRadius = edgeCorner, continuousPill = true)
                 Spacer(Modifier.width(4.dp))
@@ -507,6 +522,7 @@ fun CandidateBar(
                     onUserScroll = callbacks.onCandidateStripScrolled,
                     onNearEnd = callbacks.onCandidateStripNearEnd,
                     scrollKey = (state as? CandidateBarState.ChineseCandidates)?.let { it.inputText to it.candidates.firstOrNull() },
+                    itemPadding = candidateItemPadding,
                 )
             } else if (state !is CandidateBarState.Idle) BoxWithConstraints(Modifier.weight(1f)) {
                 val showComments = candidateCommentsVisible(maxWidth.value, density.fontScale,
@@ -542,6 +558,7 @@ fun CandidateBar(
                             commentFontFamily = commentFontFamily,
                             learned = state is CandidateBarState.ChineseCandidates && candidate in LocalLearnedCandidates.current,
                             correction = if (state is CandidateBarState.ChineseCandidates) LocalCorrectedCandidates.current[candidate].orEmpty() else "",
+                            horizontalPadding = candidateItemPadding,
                         )
                     }
 
@@ -578,6 +595,7 @@ fun CandidateBar(
                             candidateFontFamily = candidateFontFamily,
                             commentFontFamily = commentFontFamily,
                             modifier = Modifier.testTag("bar-association:$index"),
+                            horizontalPadding = candidateItemPadding,
                         )
                     }
                 }
@@ -663,6 +681,15 @@ fun CandidateBar(
             if (state !is CandidateBarState.Idle) {
                 toolbarActions.filter { it.active }.forEach { action ->
                     ToolbarActionButton(action, protectedVisuals, iconButtonTint, voiceAmplitude, voiceRecognitionState)
+                }
+            }
+            if (associationCancelRight && !candidatePageExpanded) {
+                Spacer(Modifier.width(4.dp))
+                KeyboardToolbarButton({ callbacks.onCancelInput?.invoke() }, iconButtonContainer,
+                    modifier = Modifier.testTag("association-cancel-right"), restingFill = edgeButtonFill,
+                    slotWidth = edgeSlot, cornerRadius = edgeCorner, continuousPill = true) {
+                    Icon(Icons.Outlined.HighlightOff, contentDescription = "关闭联想",
+                        tint = protectedVisuals.textColor, modifier = Modifier.size(22.dp))
                 }
             }
             // 上屏后的联想（连续联想会一直接着出）不是在打字，收起按钮照样留在最右那一格；
@@ -922,6 +949,8 @@ fun CandidateItem(
     selectionFill: Boolean = true,
     /** 候选栏还没滑动时藏起来的候选：不能点，也不接 Shift 拖动。 */
     interactive: Boolean = true,
+    /** 左右留白（含在点按范围和选中底色里），见 [rememberCandidateItemPadding]。 */
+    horizontalPadding: androidx.compose.ui.unit.Dp = CANDIDATE_ITEM_PADDING,
 ) {
     // 登记位置给 Shift 拖动：从 Shift 拖到这里松手，按住 Shift 选它（释义模式上屏英文）。
     val dropId = remember { Any() }
@@ -943,7 +972,7 @@ fun CandidateItem(
                 onClick = onClick,
                 onLongClick = onLongClick
             ) else Modifier)
-            .padding(horizontal = 4.dp, vertical = 2.dp),
+            .padding(horizontal = horizontalPadding, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -962,7 +991,7 @@ fun CandidateItem(
                 imageVector = androidx.compose.material.icons.Icons.Filled.Edit,
                 contentDescription = null,
                 tint = accentColor,
-                modifier = Modifier.align(Alignment.Top).size(with(LocalDensity.current) { (fontSize.value * 0.45f).sp.toDp() })
+                modifier = Modifier.align(Alignment.Top).size(with(LocalDensity.current) { learnedMarkSize(fontSize).toDp() })
                     .testTag("candidate-learned:$index"),
             )
         }
@@ -982,6 +1011,39 @@ fun CandidateItem(
             )
         }
     }
+}
+
+/** 「打过的词」小图标的边长：画图标和量候选宽度共用，量少了最后一个候选会被挤到栏外。 */
+internal fun learnedMarkSize(fontSize: androidx.compose.ui.unit.TextUnit): androidx.compose.ui.unit.TextUnit =
+    (fontSize.value * 0.45f).sp
+
+/** 候选后面那段小字：有纠错显示纠错，否则显示注释（和 [CandidateItem] 一致）。 */
+internal fun candidateSecondaryText(comment: String, correction: String): AnnotatedString =
+    if (correction.isNotEmpty()) correctionAnnotatedString(correction, Color.Unspecified) else AnnotatedString(comment)
+
+/** 候选两侧的默认留白。 */
+internal val CANDIDATE_ITEM_PADDING = 4.dp
+
+/** 「候选词间距加宽」时每侧留白：按字号加大，两个候选之间（含 4dp 间隔）约空出 1.2 个字。 */
+internal fun wideCandidateItemPadding(fontSize: androidx.compose.ui.unit.Dp): androidx.compose.ui.unit.Dp =
+    CANDIDATE_ITEM_PADDING + fontSize * 0.3f
+
+/** 候选两侧留白，随设置「候选词间距加宽」实时变化（默认关，B站反馈 10-31）。 */
+@Composable
+internal fun rememberCandidateItemPadding(fontSize: androidx.compose.ui.unit.TextUnit): androidx.compose.ui.unit.Dp {
+    val context = LocalContext.current
+    val preferences = remember(context) { SettingsPreferences.getPrefsPublic(context) }
+    var wide by remember(preferences) { mutableStateOf(SettingsPreferences.isWideCandidateSpacing(context)) }
+    DisposableEffect(preferences) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == SettingsPreferences.KEY_WIDE_CANDIDATE_SPACING)
+                wide = SettingsPreferences.isWideCandidateSpacing(context)
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+    val fontDp = with(LocalDensity.current) { fontSize.toDp() }
+    return if (wide) wideCandidateItemPadding(fontDp) else CANDIDATE_ITEM_PADDING
 }
 
 /** Reserve the same text height before asynchronous candidates arrive. */
@@ -1130,8 +1192,9 @@ private class HighlightMove {
 /** Layout history only; updating it after composition must not schedule another recomposition. */
 private class CandidateStripViewport { var firstIndex: Int = 0 }
 
-/** 平时显示的那几个候选；[oversized]：只有一个且比整条还宽（放不全，展开页里要再给它完整的一格）。 */
-private class CandidateStripWindow(val split: CandidateWindowSplit, val oversized: Boolean)
+/** 平时显示的那几个候选；[oversized]：只有一个且比整条还宽（放不全，展开页里要再给它完整的一格）。
+ * [tailPadding]：能滑的候选行末尾补的空白（像素），滑到最末时最后一屏也从一个完整的候选开始。 */
+private class CandidateStripWindow(val split: CandidateWindowSplit, val oversized: Boolean, val tailPadding: Int = 0)
 
 /** One measured row. Keyboard focus can move its window without changing candidate identities. */
 @Composable
@@ -1152,6 +1215,8 @@ internal fun FixedCandidateStrip(
     onNearEnd: (() -> Unit)? = null,
     /** 换了这个值（新的编码）就回到最前面。 */
     scrollKey: Any? = null,
+    /** 每个候选左右的留白，见 [rememberCandidateItemPadding]。 */
+    itemPadding: androidx.compose.ui.unit.Dp = CANDIDATE_ITEM_PADDING,
 ) {
     val measurer = rememberTextMeasurer()
     var stripOriginX by remember { mutableStateOf(Float.NaN) }
@@ -1206,18 +1271,25 @@ internal fun FixedCandidateStrip(
         val all = candidates + associations
         val focused = highlightIndex.takeIf { it in candidates.indices } ?: 0
         val viewport = remember(candidates, shownComments) { CandidateStripViewport() }
-        val window = remember(viewport, all, shownComments, focused, fontSize, density, measurer, inheritedTextStyle, showNumberLabels, itemSpacing, constraints.maxWidth, AppFonts.candidateFontFamily, AppFonts.commentFontFamily, localGap) {
+        // 小图标、纠错和画出来的一样算进宽度，否则放不下的最后一个候选也算「显示了」，「下一项」移到它时被栏边切掉。
+        val learnedCandidates = LocalLearnedCandidates.current
+        val correctedCandidates = LocalCorrectedCandidates.current
+        val window = remember(viewport, all, shownComments, focused, fontSize, density, measurer, inheritedTextStyle, showNumberLabels, itemSpacing, itemPadding, constraints.maxWidth, AppFonts.candidateFontFamily, AppFonts.commentFontFamily, localGap, learnedCandidates, correctedCandidates) {
             val widthAt: (Int) -> Int = { index ->
-                val text = candidateNumberedText(all[index], index, showNumberLabels && index < candidates.size)
+                val numbered = index < candidates.size
+                val text = candidateNumberedText(all[index], index, showNumberLabels && numbered)
                 val primary = measurer.measure(AnnotatedString(text),
                     candidatePrimaryTextStyle(fontSize, AppFonts.candidateFontFamily, index == focused),
                     softWrap = false).size.width
-                val comment = shownComments.getOrElse(index) { "" }
-                val secondary = if (comment.isEmpty()) 0 else measurer.measure(AnnotatedString(comment),
+                val learnedMark = if (numbered && all[index] in learnedCandidates)
+                    with(density) { learnedMarkSize(fontSize).toDp().roundToPx() } else 0
+                val secondaryText = candidateSecondaryText(shownComments.getOrElse(index) { "" },
+                    if (numbered) correctedCandidates[all[index]].orEmpty() else "")
+                val secondary = if (secondaryText.isEmpty()) 0 else measurer.measure(secondaryText,
                     inheritedTextStyle.merge(TextStyle(fontSize = (fontSize.value * 11f / 19f).sp,
                         fontWeight = FontWeight.Normal, fontFamily = AppFonts.commentFontFamily)), softWrap = false).size.width + with(density) { 3.dp.roundToPx() }
                 // Padding rounds each side independently at fractional device densities.
-                primary + secondary + with(density) { 2 * 4.dp.roundToPx() }
+                primary + learnedMark + secondary + with(density) { 2 * itemPadding.roundToPx() }
             }
             if (localGap != null) {
                 CandidateStripWindow(splitCandidateWindow(all.size, focused, localGap.first, constraints.maxWidth - localGap.second,
@@ -1226,7 +1298,9 @@ internal fun FixedCandidateStrip(
                 val range = candidateWindow(all.size, focused, constraints.maxWidth,
                     with(density) { itemSpacing.roundToPx() }, windowStart = viewport.firstIndex, widthAt = widthAt)
                 CandidateStripWindow(CandidateWindowSplit(range, Int.MAX_VALUE),
-                    oversized = range.count() == 1 && widthAt(range.first) > constraints.maxWidth)
+                    oversized = range.count() == 1 && widthAt(range.first) > constraints.maxWidth,
+                    tailPadding = if (scrollable) candidateTailPadding(all.size, constraints.maxWidth,
+                        with(density) { itemSpacing.roundToPx() }, widthAt) else 0)
             }
         }
         val visibleIndices = window.split.range
@@ -1248,7 +1322,7 @@ internal fun FixedCandidateStrip(
         val shiftDragFree = CandidateDropTargets.shared.hoveredBounds == null
         if (scrollable && localGap == null) {
             ScrollableCandidateRow(candidates, all, shownComments, visuals, callbacks, fontSize, focused, showNumberLabels,
-                itemSpacing, visibleIndices, scrollKey, onUserScroll, onNearEnd,
+                itemSpacing, itemPadding, visibleIndices, window.tailPadding, scrollKey, onUserScroll, onNearEnd,
                 selectionFill = shiftDragFree && !highlightShown,
                 onFocusedBounds = { focusedBounds = it; focusedOnScreen = true },
                 onFocusedGone = { focusedOnScreen = false })
@@ -1273,7 +1347,7 @@ internal fun FixedCandidateStrip(
                     onLongClick = if (index < candidates.size) callbacks.onCandidateLongPress?.let { action -> { action(index) } } else null,
                     learned = index < candidates.size && all[index] in LocalLearnedCandidates.current,
                     correction = if (index < candidates.size) LocalCorrectedCandidates.current[all[index]].orEmpty() else "",
-                    selectionFill = shiftDragFree && !highlightShown)
+                    selectionFill = shiftDragFree && !highlightShown, horizontalPadding = itemPadding)
             }
         }
         }
@@ -1283,12 +1357,16 @@ internal fun FixedCandidateStrip(
 /**
  * 能左右滑的候选行（用户 10-23）：平时和原来一样只显示放得下的那几个（[shown]），后面的先藏着；
  * 手指一滑就全部露出来，可以一直滑到展开列表里的候选。长候选不截断，滑过去就能看完。
+ * 松手后对齐到候选开头，停下时两边被栏边切掉一半的候选先藏起来（用户 10-31：滑动后左边的候选显示不全）；
+ * 末尾补 [tailPaddingPx] 的空白，滑到最末时也能从一个完整的候选开始。
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ScrollableCandidateRow(
     candidates: List<String>, all: List<String>, comments: List<String>, visuals: CandidateBarVisuals,
     callbacks: CandidateBarCallbacks, fontSize: androidx.compose.ui.unit.TextUnit, focused: Int,
-    showNumberLabels: Boolean, itemSpacing: androidx.compose.ui.unit.Dp, shown: IntRange, scrollKey: Any?,
+    showNumberLabels: Boolean, itemSpacing: androidx.compose.ui.unit.Dp, itemPadding: androidx.compose.ui.unit.Dp,
+    shown: IntRange, tailPaddingPx: Int, scrollKey: Any?,
     onUserScroll: (() -> Unit)?, onNearEnd: (() -> Unit)?, selectionFill: Boolean,
     onFocusedBounds: (androidx.compose.ui.geometry.Rect) -> Unit,
     onFocusedGone: () -> Unit,
@@ -1313,12 +1391,42 @@ private fun ScrollableCandidateRow(
             revealed && (listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1) >= candidateCount - 4
         }.collect { if (it) currentNearEnd?.invoke() }
     }
+    // 停稳后被栏边切掉一部分的候选（滑动、对齐途中为空，全部照常显示）。比整条还宽的长候选不算，要能滑着看完。
+    val cutAtEdge by remember(listState) {
+        androidx.compose.runtime.derivedStateOf {
+            if (listState.isScrollInProgress) emptySet<Int>() else {
+                val info = listState.layoutInfo
+                val viewport = info.viewportEndOffset - info.viewportStartOffset
+                info.visibleItemsInfo.filter {
+                    it.size <= viewport &&
+                        (it.offset < info.viewportStartOffset || it.offset + it.size > info.viewportEndOffset)
+                }.mapTo(HashSet()) { it.index }
+            }
+        }
+    }
+    // 露出长候选时不对齐，停在手指松开的地方，才能看到长候选中间的字。
+    val longVisible by remember(listState) {
+        androidx.compose.runtime.derivedStateOf {
+            val info = listState.layoutInfo
+            val viewport = info.viewportEndOffset - info.viewportStartOffset
+            info.visibleItemsInfo.any { it.size > viewport }
+        }
+    }
+    val snapFling = androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(listState,
+        androidx.compose.foundation.gestures.snapping.SnapPosition.Start)
+    val freeFling = androidx.compose.foundation.gestures.ScrollableDefaults.flingBehavior()
+    val tailPadding = with(LocalDensity.current) { tailPaddingPx.toDp() }
     LazyRow(Modifier.fillMaxWidth().testTag("candidate-scroll-row"), state = listState,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(end = tailPadding),
+        flingBehavior = if (longVisible) freeFling else snapFling,
         horizontalArrangement = Arrangement.spacedBy(itemSpacing), verticalAlignment = Alignment.CenterVertically) {
         items(all.size) { index ->
-            val hidden = !revealed && index !in shown
+            val cutOff = revealed && index in cutAtEdge
+            val hidden = (!revealed && index !in shown) || cutOff
             val numbered = index < candidates.size
             if (index == focused) DisposableEffect(Unit) { onDispose { onFocusedGone() } }
+            // 选中的候选停在栏边被藏起来：选中底色也先不画。
+            if (index == focused && hidden) SideEffect { onFocusedGone() }
             CandidateItem(candidateNumberedText(all[index], index, showNumberLabels && numbered), index, {
                 if (numbered) callbacks.onCandidateSelect(index)
                 else callbacks.onAssociationSelect?.invoke(index - candidates.size)
@@ -1335,7 +1443,7 @@ private fun ScrollableCandidateRow(
                 learned = numbered && all[index] in LocalLearnedCandidates.current,
                 correction = if (numbered) LocalCorrectedCandidates.current[all[index]].orEmpty() else "",
                 selectionFill = selectionFill,
-                interactive = !hidden)
+                interactive = !hidden, horizontalPadding = itemPadding)
         }
     }
 }
