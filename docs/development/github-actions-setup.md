@@ -52,3 +52,9 @@ WSL 同源备份：`/home/erenche/.config/cyime/signing/shaklow-CyIME/`，目录
 本轮只修改 workflow、辅助脚本和文档，不重新打包 APK。workflow 配置通过提交推送到默认分支生效。按用户 2026-10-31 的最新要求，**Nightly 保持禁用**。
 
 GitHub runner 的验证使用 [Release workflow](https://github.com/shaklow/CyIME/actions/workflows/release.yml) 的 `signing_check_only=true` 模式，运行结果以 Actions 记录及本机 `.codex-artifacts/github-actions-setup-20261031/` 中的回执为准；这项校验不创建公开 Release。
+
+### 2026-10-31：可选布局门禁的测试编译失败
+
+手动完整构建 [41203948358](https://github.com/shaklow/CyIME/actions/runs/41203948358) 的签名校验已通过，但在 `:app:compileDebugAndroidTestKotlin` 失败。上游给 `KeyboardRowWithConfig` 的第二个参数增加了可选的 `keySpans`，`DeletionAndEdgeTouchTest` 仍按旧位置传递回调、配色和 `isShifted`，导致 `Boolean` 被当成 `KeyboardRowConfig`。
+
+测试调用改为具名参数，继续使用默认的按键宽度计算；不改变被测边缘点击行为。Release 在启动模拟器前先编译仪器测试，同类接口兼容错误会提前失败。完整构建验证使用 `signing_check_only=false`、`run_layout_gate=true`，结果记录在 Actions 及本地 `.codex-artifacts/actions-fix-20261031/` 回执中。Nightly 保持禁用。

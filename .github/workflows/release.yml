@@ -126,6 +126,10 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Compile instrumented tests before starting the emulator
+        if: inputs.run_layout_gate
+        run: ./gradlew :app:compileDebugAndroidTestKotlin --no-daemon --max-workers=2
+
       - name: Enable emulator acceleration
         if: inputs.run_layout_gate
         run: |
